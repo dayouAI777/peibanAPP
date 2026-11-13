@@ -232,14 +232,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     final r = await showCorrectReplyDialog(context, original: m.content);
     if (r == null || !mounted) return;
-    await app.correctReply(
+    final out = await app.correctReply(
       msg: m,
       preferred: r.text,
       replaceMessage: r.replace,
     );
     if (!mounted) return;
+    // 提示必须说实话：以前不管存没存进去都弹「改好了」
+    final msg = switch (out.result) {
+      CorrectResult.unchanged => '跟原文一样，没有记下来',
+      CorrectResult.failed => '没记下来，再试一次',
+      CorrectResult.duplicate => '这条之前就记过了，没重复记',
+      CorrectResult.saved => out.total > 0
+          ? '记住了（第 ${out.total} 条），她以后遇到同类场合照这个说'
+          : '记住了，她以后照这个说',
+    };
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(r.replace ? '改好了，她以后就照这个说' : '记下了，她以后就照这个说'),
+      content: Text(msg),
       duration: const Duration(seconds: 2),
     ));
   }

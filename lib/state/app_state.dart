@@ -46,6 +46,47 @@ class _Timing {
   });
 }
 
+/// 「改她这句话」做完之后发生了什么，用来决定提示文案。
+///
+/// 以前这里什么都不返回，界面永远弹「改好了」——哪怕一个字都没存进去
+/// （V1.6.1 之前的真 bug：内存里的消息没有 id，整段逻辑静默返回）。
+enum CorrectResult {
+  /// 新记了一条
+  saved,
+
+  /// 同样的话之前就记过，不重复记
+  duplicate,
+
+  /// 改完跟原文一样，等于没改
+  unchanged,
+
+  /// 没有角色 / 内容是空的，做不了
+  failed,
+}
+
+class CorrectOutcome {
+  final CorrectResult result;
+
+  /// 是否把那条历史消息也替换了（消息没有 id 时做不到）
+  final bool replaced;
+
+  /// 现在一共记了多少条
+  final int total;
+
+  const CorrectOutcome({
+    required this.result,
+    this.replaced = false,
+    this.total = 0,
+  });
+
+  bool get saved => result == CorrectResult.saved;
+
+  static const CorrectOutcome unchanged =
+      CorrectOutcome(result: CorrectResult.unchanged);
+  static const CorrectOutcome failed =
+      CorrectOutcome(result: CorrectResult.failed);
+}
+
 /// 全局状态。页面只管显示和点按钮，脏活都在这里。
 class AppState extends ChangeNotifier {
   final DeepSeekService _llm = DeepSeekService();
@@ -293,10 +334,10 @@ class AppState extends ChangeNotifier {
       content: finalized.greeting,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
-    await DbHelper.instance.insertMessage(first);
+    final firstId = await DbHelper.instance.insertMessage(first);
 
     companion = (await DbHelper.instance.firstCompanion())!;
-    messages = [first];
+    messages = [first.copyWith(id: firstId)];
     chunks = [];
     notes = [];
     styleExamples = [];
@@ -393,8 +434,7 @@ class AppState extends ChangeNotifier {
       createdAt: now.millisecondsSinceEpoch,
       imagePath: img,
     );
-    await DbHelper.instance.insertMessage(userMsg);
-    messages.add(userMsg);
+    messages.add(userMsg.copyWith(id: await DbHelper.instance.insertMessage(userMsg)));
     _userMessageCount++;
     error = null;
 
@@ -412,8 +452,7 @@ class AppState extends ChangeNotifier {
           content: sticker,
           createdAt: DateTime.now().millisecondsSinceEpoch,
         );
-        await DbHelper.instance.insertMessage(sm);
-        messages.add(sm);
+        messages.add(sm.copyWith(id: await DbHelper.instance.insertMessage(sm)));
       }
       notifyListeners();
       return;
@@ -430,8 +469,7 @@ class AppState extends ChangeNotifier {
         content: '🥺',
         createdAt: DateTime.now().millisecondsSinceEpoch,
       );
-      await DbHelper.instance.insertMessage(soften);
-      messages.add(soften);
+      messages.add(soften.copyWith(id: await DbHelper.instance.insertMessage(soften)));
       notifyListeners();
       return;
     }
@@ -463,8 +501,7 @@ class AppState extends ChangeNotifier {
         content: answer,
         createdAt: DateTime.now().millisecondsSinceEpoch,
       );
-      await DbHelper.instance.insertMessage(botMsg);
-      messages.add(botMsg);
+      messages.add(botMsg.copyWith(id: await DbHelper.instance.insertMessage(botMsg)));
     } catch (e) {
       error = e.toString();
     } finally {
@@ -564,8 +601,8 @@ class AppState extends ChangeNotifier {
         createdAt: DateTime.now().millisecondsSinceEpoch,
         isProactive: 1,
       );
-      await DbHelper.instance.insertMessage(m);
-      messages.add(m);
+      messages.add(
+          m.copyWith(id: await DbHelper.instance.insertMessage(m)));
     } catch (_) {
       // 静默
     } finally {
@@ -578,22 +615,31 @@ class AppState extends ChangeNotifier {
 
   /// 长按她的某条消息 → 用户写出「她本来该这么说」。
   ///
-  /// 存下来的是具体范例（触发句 → 错答 → 正答），会进 system prompt 当示范；
+  /// 存下来的是**语气范例**（什么场合 → 她该怎么说），会进 system prompt 当示范。
+  /// 不是问答对照表：prompt 里明确要求她「换话题也照这个味道说新话」，不照抄。
+  ///
   /// [replaceMessage] 为真时顺手把这条历史消息也换成用户写的版本，
   /// 这样上下文里留着的也是对的，而不是让她继续照着自己的错话往下聊。
-  Future<void> correctReply({
+  Future<CorrectOutcome> correctReply({
     required ChatMessage msg,
     required String preferred,
     bool replaceMessage = true,
   }) async {
     final c = companion;
-    final id = msg.id;
     final text = preferred.trim();
-    if (c == null || id == null || text.isEmpty) return;
+    if (c == null || text.isEmpty) return CorrectOutcome.failed;
+
+    final original = msg.content.trim();
+    // 一个字都没改：没什么可学的，也不该弹「改好了」骗人
+    if (text == original) return CorrectOutcome.unchanged;
+
+    // 消息 id 现在一定有了（落库后 copyWith 回填）。万一还是没有，
+    // 学习照样要存下来——只有「就地替换历史消息」这一半需要 id。
+    final id = msg.id;
+    final at = id == null ? -1 : messages.indexWhere((m) => m.id == id);
 
     // 触发句：这条之前最近一句用户说的话
     String trigger = '';
-    final at = messages.indexWhere((m) => m.id == id);
     if (at > 0) {
       for (int i = at - 1; i >= 0; i--) {
         if (messages[i].fromUser) {
@@ -603,10 +649,10 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    final original = msg.content.trim();
     // 同一条原话 + 同一个改法只记一次，避免反复长按把 prompt 塞满重复项
     final dup = styleExamples.any(
         (e) => e.original == original && e.preferred == text);
+    var saved = false;
     if (!dup) {
       await DbHelper.instance.insertStyleExample(StyleExample(
         companionId: c.id!,
@@ -616,23 +662,23 @@ class AppState extends ChangeNotifier {
         createdAt: DateTime.now().millisecondsSinceEpoch,
       ));
       styleExamples = await DbHelper.instance.styleExamples(c.id!);
+      saved = true;
     }
 
-    if (replaceMessage) {
+    var replaced = false;
+    if (replaceMessage && id != null) {
       await DbHelper.instance.updateMessageContent(id, text);
       if (at >= 0) {
-        messages[at] = ChatMessage(
-          id: msg.id,
-          companionId: msg.companionId,
-          role: msg.role,
-          content: text,
-          createdAt: msg.createdAt,
-          isProactive: msg.isProactive,
-          imagePath: msg.imagePath,
-        );
+        messages[at] = messages[at].copyWith(content: text);
+        replaced = true;
       }
     }
     notifyListeners();
+    return CorrectOutcome(
+      result: saved ? CorrectResult.saved : CorrectResult.duplicate,
+      replaced: replaced,
+      total: styleExamples.length,
+    );
   }
 
   Future<void> deleteStyleExample(int id) async {

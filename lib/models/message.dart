@@ -48,6 +48,22 @@ class ChatMessage {
         'image_path': imagePath,
       };
 
+  /// 落库之后把数据库给的 id 填回来。
+  ///
+  /// 为什么必须有这个：`insertMessage` 只返回 rowId，对象本身还是 id=null。
+  /// 以前直接把它塞进内存列表，于是在**当前这次会话里**新发的消息都没有 id，
+  /// 长按改她这句话时 `correctReply` 拿不到 id 就静默返回了——界面还照样弹
+  /// 「改好了」，其实一条都没存（V1.6.1 之前的真 bug）。
+  ChatMessage copyWith({int? id, String? content}) => ChatMessage(
+        id: id ?? this.id,
+        companionId: companionId,
+        role: role,
+        content: content ?? this.content,
+        createdAt: createdAt,
+        isProactive: isProactive,
+        imagePath: imagePath,
+      );
+
   factory ChatMessage.fromMap(Map<String, dynamic> m) => ChatMessage(
         id: m['id'] as int?,
         companionId: (m['companion_id'] as int?) ?? 0,

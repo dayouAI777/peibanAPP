@@ -27,7 +27,7 @@ class StyleExamplesPage extends StatelessWidget {
                         size: 42, color: Colors.grey.shade400),
                     const SizedBox(height: 12),
                     Text(
-                      '还没有。\n在聊天里长按她说的话，选「改她这句怎么说」，\n写一遍你希望她说出来的样子。',
+                      '还没有。\n在聊天里长按她说的话，选「改她这句怎么说」，\n写一遍你希望她说出来的样子。\n\n她学到的是说话方式，不是背答案：\n换个话题，她也会照这个味道说新的话。',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           height: 1.8, color: Colors.grey.shade600, fontSize: 13),
@@ -44,8 +44,10 @@ class StyleExamplesPage extends StatelessWidget {
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 12),
                     child: Text(
-                      '这些是你亲手改的，每次对话都会带上：她遇到同类场合，'
-                      '会照「应该说」那栏的语气和长度来。共 ${list.length} 条。',
+                      '这些是你亲手改的，每次对话都会带上。\n'
+                      '她学的是说话方式——语气、长度、用词、态度，'
+                      '遇到同类场合就照「应该说」那栏的味道说新的话，不是把这句当标准答案。\n'
+                      '共 ${list.length} 条，只带最新的 12 条进对话。',
                       style: theme.textTheme.bodySmall
                           ?.copyWith(color: Colors.grey.shade600, height: 1.6),
                     ),

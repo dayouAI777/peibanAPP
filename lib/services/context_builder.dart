@@ -148,25 +148,30 @@ class ContextBuilder {
 
     // 用户亲手改过的说法：具体范例对模型的约束力远强于抽象规则，
     // 所以放在最后（离生成最近），优先级天然最高。
+    //
+    // 这里刻意**只给「该怎么说」，不给「她原来那句错的」**：
+    // 把错句也塞进来，模型很容易把错句的表面特征复读一遍（尤其短上下文里），
+    // 而且对照表形式会让它误以为是「遇到这句话就答那句话」的检索题。
+    // 用户要的是学会说话方式，不是固定回答——所以范例只当语气标杆。
     if (styleExamples.isNotEmpty) {
       final picked = styleExamples.length > maxStyleExamples
           ? styleExamples.sublist(styleExamples.length - maxStyleExamples)
           : styleExamples;
-      b.writeln('\n【她这么说被改过 · 必须照「改后」来】');
-      b.writeln('下面每一条都是对方亲手改的：「改前」是她错的回答，「改后」才是对的。'
-          '遇到同类场合，语气、长度、措辞一律向「改后」看齐。');
-      b.writeln('不要照抄具体内容（换了话题就按同样的味道重新说），'
-          '也不要提起「你改过我」这件事。');
+      b.writeln('\n【她这个人的说话方式 · 照这个味道说，别背答案】');
+      b.writeln('下面每一条，都是对方亲手把她的话改成了自己认的样子。'
+          '学的是**语气、长度、用词、态度**，不是把这句当标准答案存起来。');
+      b.writeln('换个话题、换个说法，也要用同样的味道说新的话：'
+          '该短就短，该糙就糙，该不接话就不接话。'
+          '不要照抄原句，也不要提起「你改过我」。');
       for (final e in picked) {
         final p = e.preferred.trim();
         if (p.isEmpty) continue;
-        final buf = StringBuffer('- ');
-        if (e.trigger.trim().isNotEmpty) buf.write('对方说「${e.trigger.trim()}」→ ');
-        if (e.original.trim().isNotEmpty) {
-          buf.write('她说错了「${e.original.trim()}」→ ');
+        final t = e.trigger.trim();
+        if (t.isEmpty) {
+          b.writeln('- 她会这么说：「$p」');
+        } else {
+          b.writeln('- 对方说「$t」这种话的时候，她会这么说：「$p」');
         }
-        buf.write('应该「$p」');
-        b.writeln(buf.toString());
       }
     }
 

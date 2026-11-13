@@ -116,10 +116,26 @@ void main() {
       window: 1000,
       styleExamples: examples,
     );
-    expect(system.contains('改后'), isTrue);
+    expect(system.contains('不是把这句当标准答案存起来'), isTrue);
     expect(system.contains('对19'), isTrue); // 最新的在
     expect(system.contains('对8'), isTrue); // 刚好第 12 条
     expect(system.contains('对7'), isFalse); // 再早的砍掉，别稀释人设
+    // 学方式而不是背答案：错句原文不进 prompt，免得模型复读错句的表面特征
+    expect(system.contains('错19'), isFalse);
+  });
+
+  test('消息落库后能补回 id，改她的话才有地方写', () {
+    const before = ChatMessage(
+        companionId: 1, role: 'assistant', content: '这才几点啊', createdAt: 0);
+    expect(before.id, isNull);
+    final after = before.copyWith(id: 42);
+    expect(after.id, 42);
+    expect(after.content, '这才几点啊');
+    // 只换内容，其他字段不动
+    final edited = before.copyWith(id: 42, content: '刚下班，累死了');
+    expect(edited.content, '刚下班，累死了');
+    expect(edited.role, 'assistant');
+    expect(edited.createdAt, 0);
   });
 
   test('聊天背景读坏了退回默认，图片丢了也不白屏', () {
