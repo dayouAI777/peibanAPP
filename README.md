@@ -208,16 +208,35 @@
 
 ### 签名（重要）
 
-**签名文件在仓库里**：`android/app/peiban-signing.jks`，口令写在 `build.gradle.kts` 里。
-以前用 `~/.android/debug.keystore`，换一台电脑 debug key 会重新生成，签出来的包跟手机上那个
-签名不一致，安装时直接报「应用未安装」——V1.6.0 之前就踩了这个坑，只能卸载重装一次。
+**签名文件不在仓库里。** 放在仓库外，由持有者自己保管、自己带到每台机器：
+`C:/Users/Administrator/.peiban-keys/peiban-signing.jks`，构建时从 `android/key.properties` 读
+（这个文件在 `.gitignore` 里）。
 
-以后不管换多少台机器，只要这个 jks 跟着仓库走，签名就不会变，升级能一直覆盖安装。
-**不要删它，也不要用别的 key 重新签**，否则又得卸载重装。
+```properties
+# android/key.properties（不进仓库，换电脑自己写一份）
+storeFile=C:/Users/Administrator/.peiban-keys/peiban-signing.jks
+storePassword=……
+keyAlias=peiban
+keyPassword=……
+```
 
-**只有 V1.6.0 这一次例外**：它用的是新机器的 key（旧 key 随旧电脑丢了），所以从 1.5.x 及更早
-升级上来必须先卸载一次。卸载会清掉聊天记录、人设、行为手册，装好后重新填 API Key、重新定人设。
-**1.6.0 → 1.6.1 起签名已经固定**，之后所有版本都能直接覆盖安装。
+`build.gradle.kts` 在没有这个文件、又要打 release 包时会直接报错说明缺什么，不会悄悄用别的
+key 签出一个装不上的包。debug 构建和 `flutter run` 不受影响。
+
+**当前这把 key**（V1.6.1 起）：别名 `peiban`，RSA 2048，有效期到 2056-11-05，
+证书 SHA-256 = `e6a72fee…4ef683`。核对命令：
+
+```bash
+"$JAVA_HOME/bin/apksigner" verify --print-certs build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+```
+
+**这把 key 永远不要再重新生成**，一换就意味着所有人卸载重装、聊天记录全丢。
+
+历史教训（两次）：
+1. 最早用 `~/.android/debug.keystore`，换电脑 debug key 重新生成 → 签名不一致，装不上
+2. 后来把 jks 塞进公开仓库 → 谁都能签一个"系统认账"的假更新包。V1.6.1 换掉了这把 key
+
+所以 **V1.6.1 这一版不管是 1.6.0 还是更早，都必须先卸载再装**。这是最后一次。
 
 ### 发布命令
 

@@ -1,7 +1,31 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// 发布签名从 android/key.properties 读，**key 文件不进仓库**（由持有者自己带、自己分发）。
+// 换电脑要做的：把 peiban-signing.jks 放好，再照 key.properties 的格式写一份。
+val keyPropsFile = rootProject.file("key.properties")
+val keyProps = Properties().apply {
+    if (keyPropsFile.exists()) {
+        keyPropsFile.inputStream().use { load(it) }
+    }
+}
+val signingReady = keyProps.getProperty("storeFile")?.isNotBlank() == true
+
+// 只在真的要打 release 包时报错，别把 debug 构建和 flutter run 一起挡死。
+val buildingRelease = gradle.startParameter.taskNames.any {
+    it.contains("Release", ignoreCase = true)
+}
+if (!signingReady && buildingRelease) {
+    throw GradleException(
+        "找不到发布签名配置：请在 android/ 下建 key.properties，" +
+            "写 storeFile / storePassword / keyAlias / keyPassword 四项。" +
+            "签名文件不在仓库里，要单独拿。"
+    )
 }
 
 android {
@@ -32,21 +56,23 @@ android {
     }
 
     signingConfigs {
-        create("peiban") {
-            storeFile = file("peiban-signing.jks")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+        if (signingReady) {
+            create("peiban") {
+                storeFile = file(keyProps.getProperty("storeFile"))
+                storePassword = keyProps.getProperty("storePassword")
+                keyAlias = keyProps.getProperty("keyAlias")
+                keyPassword = keyProps.getProperty("keyPassword")
+            }
         }
     }
 
     buildTypes {
         release {
-            // 签名文件跟着仓库走（android/app/peiban-signing.jks）。
-            // 以前用 ~/.android/debug.keystore：换一台电脑，debug key 会重新生成，
-            // 签出来的包跟手机上那个签名不一致，安装时直接报「应用未安装」。
-            // 自用 App，口令就写在仓库里，不需要保密。
-            signingConfig = signingConfigs.getByName("peiban")
+            // 签名文件**不进仓库**，从 android/key.properties 指定的位置读（见文件头的检查）。
+            // 血泪教训：以前用 ~/.android/debug.keystore，换电脑 debug key 会重新生成，
+            // 签出来的包跟手机上那个签名不一致，安装时报「应用未安装」，只能卸载重装、数据全丢。
+            // 现在这把 key 从 1.6.1 起固定，持有者自己保管，别再重新生成。
+            signingConfig = if (signingReady) signingConfigs.getByName("peiban") else null
         }
     }
 }
