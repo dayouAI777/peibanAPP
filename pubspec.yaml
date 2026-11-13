@@ -1,0 +1,32 @@
+name: peiban_app
+description: AI 虚拟陪伴 App（自用版，接入 DeepSeek）
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # 全局状态：页面之间共享「当前角色 / 聊天记录 / 加载中」
+  provider: ^6.1.2
+  # 本地数据库：角色卡 + 聊天记录
+  sqflite: ^2.3.3+1
+  path: ^1.9.0
+  path_provider: ^2.1.4
+  # 轻量设置：API Key、主动消息开关与频率
+  shared_preferences: ^2.3.0
+  # 调 DeepSeek 的 HTTP 请求
+  http: ^1.2.2
+  # 从相册挑人物参考图（用户自己上传，不接文生图服务）
+  image_picker: ^1.1.2
+  # 主动消息：预约本地通知，不用服务器
+  flutter_local_notifications: ^17.2.2
+  timezone: ^0.9.4
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

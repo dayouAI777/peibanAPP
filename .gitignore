@@ -1,0 +1,39 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+coverage/
+
+# Android 平台目录由 flutter create 生成，签名材料绝不入库
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug/
+android/app/profile/
+android/app/release/
+*.jks
+*.keystore
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/.last_build_id
+
+# 私密配置（API Key 只存手机本机，不进仓库）
+.env
+*.env
+api_key.txt
+secrets.json
+
+# 系统
+.DS_Store
+Thumbs.db
