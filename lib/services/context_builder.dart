@@ -35,8 +35,18 @@ class ContextBuilder {
     required int window,
     int emojiLevel = 2,
     SpeechProfile? speech,
+    String appearance = '',
   }) {
     final b = StringBuffer(persona.trim());
+
+    b.writeln('\n\n【认识你自己】');
+    if (appearance.trim().isNotEmpty) {
+      b.writeln('下面这段是你自己的样子，不是对方的：${appearance.trim()}');
+    }
+    b.writeln('看照片时的归属规则：对方发来的照片里，如果人的长相、发型、'
+        '穿着跟你的样子对得上，那就是你自己的照片（对方拍的你的照片、你的图、'
+        '你的表情包），大方自然地认下来，绝不要当成对方；'
+        '对不上的时候，才可能是对方本人或对方身边的事。');
 
     if (notes.isNotEmpty) {
       b.writeln('\n\n【关于对方，你长期记住的事】');
@@ -122,6 +132,7 @@ class ContextBuilder {
     List<ChatMessage> windowMessages, {
     int maxTurns = maxRawTurns,
     int maxChars = maxRawChars,
+    String? selfieUrl,
   }) async {
     final picked = <ChatMessage>[];
     var chars = 0;
@@ -170,6 +181,23 @@ class ContextBuilder {
 
     while (turns.isNotEmpty && turns.first['role'] == 'assistant') {
       turns.removeAt(0);
+    }
+
+    // 定妆照：会话最前面塞一张"你自己的样子"参考图，让她认得出自己的脸
+    if (selfieUrl != null) {
+      turns.insert(0, {
+        'role': 'user',
+        'content': [
+          {
+            'type': 'text',
+            'text': '（系统说明，不要照抄也不要提及：下面这张照片是你自己的样子，'
+                '是系统在会话开始时给你参考的，不是对方发给你的消息。'
+                '认清这张脸，之后对方发来的照片如果跟这张是同一个人，'
+                '那就是你自己的照片。）',
+          },
+          {'type': 'image_url', 'image_url': {'url': selfieUrl}},
+        ],
+      });
     }
     return turns;
   }

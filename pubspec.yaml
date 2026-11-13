@@ -1,7 +1,7 @@
 name: peiban_app
 description: AI 虚拟陪伴 App（自用版，接入 DeepSeek）
 publish_to: 'none'
-version: 1.4.1+7
+version: 1.4.2+8
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
@@ -24,6 +24,8 @@ dependencies:
   open_filex: ^5.0.0
   # 从相册挑人物参考图
   image_picker: ^1.2.4
+  # 纯 Dart 图像处理：给头像压一张"定妆照"小图当身份参考
+  image: ^4.5.4
   # 主动消息：预约本地通知
   flutter_local_notifications: ^22.3.3
   timezone: ^0.11.2

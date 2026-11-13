@@ -8,6 +8,7 @@ import '../models/message.dart';
 import '../models/persona_space.dart';
 import '../models/speech_profile.dart';
 import '../models/user_note.dart';
+import '../services/chat_images.dart';
 import '../services/context_builder.dart';
 import '../services/deepseek.dart';
 import '../services/memory_service.dart';
@@ -127,6 +128,22 @@ class AppState extends ChangeNotifier {
 
   // ——— 聊天 ———
 
+  /// 人设里的外貌描述：让她知道"自己长什么样"，认照片不认错人。
+  String _appearanceOf(Companion c) {
+    if (c.personaSpace.isEmpty) return '';
+    try {
+      return PersonaSpace.decode(c.personaSpace).fields['appearance'] ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// 头像压成的定妆照 data url（有头像才给，失败返回 null 走纯文字描述）。
+  Future<String?> _selfieUrl(Companion c) async {
+    if (c.avatarPath.isEmpty) return null;
+    return ChatImages.instance.selfieDataUrl(c.avatarPath);
+  }
+
   Future<String> _systemPrompt(Companion c) async => ContextBuilder.buildSystem(
         persona: c.persona,
         notes: notes,
@@ -134,6 +151,7 @@ class AppState extends ChangeNotifier {
         window: contextWindow,
         emojiLevel: await Prefs.emojiLevel(),
         speech: speech,
+        appearance: _appearanceOf(c),
       );
 
   Future<void> send(String text, {String? imagePath}) async {
@@ -161,7 +179,10 @@ class AppState extends ChangeNotifier {
       final answer = await _llm.reply(
         apiKey: await Prefs.apiKey(),
         system: await _systemPrompt(c),
-        history: await ContextBuilder.buildTurns(messages),
+        history: await ContextBuilder.buildTurns(
+          messages,
+          selfieUrl: await _selfieUrl(c),
+        ),
         temperature: await Prefs.temperature(),
       );
       final botMsg = ChatMessage(
@@ -245,7 +266,10 @@ class AppState extends ChangeNotifier {
       final line = await _llm.proactiveLine(
         apiKey: key,
         system: await _systemPrompt(c),
-        history: await ContextBuilder.buildTurns(messages),
+        history: await ContextBuilder.buildTurns(
+          messages,
+          selfieUrl: await _selfieUrl(c),
+        ),
       );
       final m = ChatMessage(
         companionId: c.id!,
