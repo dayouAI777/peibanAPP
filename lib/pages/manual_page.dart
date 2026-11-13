@@ -81,7 +81,7 @@ class _ManualPageState extends State<ManualPage> {
             child: Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: theme.colorScheme.primaryContainer.withOpacity(0.4),
+                color: theme.colorScheme.primaryContainer.withValues(alpha: 0.4),
                 borderRadius: BorderRadius.circular(14),
               ),
               child: const Text(
@@ -129,9 +129,10 @@ class _ManualPageState extends State<ManualPage> {
                           icon: const Icon(Icons.close, size: 18),
                           onPressed: () async {
                             if (n.id == null) return;
+                            final app = context.read<AppState>();
                             await DbHelper.instance.deleteNote(n.id!);
                             if (!mounted) return;
-                            await context.read<AppState>().refreshNotes();
+                            await app.refreshNotes();
                           },
                         ),
                       );

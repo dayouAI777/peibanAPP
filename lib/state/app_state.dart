@@ -270,6 +270,7 @@ class AppState extends ChangeNotifier {
           messages,
           selfieUrl: await _selfieUrl(c),
         ),
+        temperature: await Prefs.temperature(),
       );
       final m = ChatMessage(
         companionId: c.id!,

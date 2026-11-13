@@ -1,12 +1,11 @@
 {
-  "version": "1.4.2",
-  "build": 8,
-  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.4.2/app-release.apk",
+  "version": "1.4.3",
+  "build": 9,
+  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.4.3/app-release.apk",
   "changelog": [
-    "修复：给她发她的照片会被认成你——现在她认识自己的长相了",
-    "人设里的外貌描述单独标成「你自己的样子」，并写明照片归属规则",
-    "她的头像会压成小图随对话随身携带，当认脸参考，收到同脸照片会大方承认是自己",
-    "换头像后自动更新参考图，图片识别结果更准"
+    "修复：TA 主动找你时说的那句胡话——主动消息的随机度从 1.35 降到跟你设置里一致，不再冒出语义崩坏的长段落",
+    "修复：删角色、存设置后偶发的界面报错（跨异步拿界面上下文的老坑）",
+    "清理：几处过时 API 写法，对外观和聊天没有任何影响"
   ],
   "published_at": "2026-11-13",
   "min_supported": "1.1.0",

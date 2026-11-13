@@ -159,7 +159,7 @@ class _PersonaPageState extends State<PersonaPage> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: theme.colorScheme.primaryContainer.withOpacity(0.45),
+                  color: theme.colorScheme.primaryContainer.withValues(alpha: 0.45),
                   borderRadius: BorderRadius.circular(14),
                 ),
                 child: const Text(

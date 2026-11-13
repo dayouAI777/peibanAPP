@@ -135,10 +135,13 @@ class DeepSeekService {
   }
 
   /// 角色主动开口。
+  /// 温度必须跟普通回复同一档（默认 0.8，用户设置里可调）：
+  /// 旧版写死 1.35，实测常在主动消息里输出语义崩坏的长段落。
   Future<String> proactiveLine({
     required String apiKey,
     required String system,
     required List<Map<String, dynamic>> history,
+    double temperature = 0.8,
   }) async {
     const extra = '''
 【此刻的特殊要求】
@@ -158,7 +161,7 @@ class DeepSeekService {
       apiKey: apiKey,
       system: '$system\n\n$extra',
       messages: turns,
-      temperature: 1.35,
+      temperature: temperature.clamp(0.4, 1.0),
       maxTokens: 180,
     );
   }

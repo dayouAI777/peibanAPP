@@ -89,6 +89,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Future<void> _save() async {
     setState(() => _saving = true);
+    // 先拿到引用，避免跨异步等待后再碰 context
+    final app = context.read<AppState>();
     await Prefs.setApiKey(_key.text);
     await Prefs.saveProactiveSettings(_s);
     await Prefs.setTemperature(_temperature);
@@ -96,7 +98,7 @@ class _SettingsPageState extends State<SettingsPage> {
     await Prefs.setContextLimit(_contextWindow);
     await Prefs.setManualEnabled(_manualEnabled);
     await Prefs.setAutoUpdateCheck(_autoUpdate);
-    await context.read<AppState>().applySettings();
+    await app.applySettings();
     if (!mounted) return;
     setState(() => _saving = false);
     ScaffoldMessenger.of(context).showSnackBar(
@@ -425,10 +427,11 @@ class _SettingsPageState extends State<SettingsPage> {
               '删除这个人，重新定？',
               '人设定稿后不能改，删除是唯一重来的办法。所有记录会清空，无法恢复。',
               () async {
-                await context.read<AppState>().deleteCompanion();
+                final app = context.read<AppState>();
+                final nav = Navigator.of(context);
+                await app.deleteCompanion();
                 if (!mounted) return;
-                Navigator.of(context)
-                    .pushNamedAndRemoveUntil('/persona', (route) => false);
+                nav.pushNamedAndRemoveUntil('/persona', (route) => false);
               },
             ),
           ),
