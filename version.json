@@ -1,11 +1,13 @@
 {
-  "version": "1.1.1",
-  "build": 3,
-  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.1.1/app-release.apk",
+  "version": "1.1.0",
+  "build": 2,
+  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.1.0/app-release.apk",
   "changelog": [
-    "设置页新增醒目的「检查更新」按钮，点完给出明确结果（不再一闪而过）",
-    "首页人设卡也加了「检查更新」入口",
-    "说明清楚：升级是 App 主动查仓库，不是服务器推送；自动只检查、不自动安装"
+    "配置门禁：先填 API Key 并测试链接，通过后才进入人设",
+    "人设改为自由输入 + AI 解析查缺补漏；定稿后不可修改，只能删除重建",
+    "上下文扩到 1000 句，更早对话自动压缩成长期记忆摘要",
+    "新增用户行为记录手册：AI 判断 + 内置硬规则，只记稳定习惯",
+    "新增在线升级：版本清单托管在 Git 仓库"
   ],
   "published_at": "2026-11-13",
   "min_supported": "1.0.0",

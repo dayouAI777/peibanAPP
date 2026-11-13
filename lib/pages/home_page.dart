@@ -7,7 +7,6 @@ import '../data/prefs.dart';
 import '../models/persona_space.dart';
 import '../services/update_service.dart';
 import '../state/app_state.dart';
-import '../widgets/update_helper.dart';
 
 /// 启动落地页：人设卡（只读）。强调「这个人已经定了」。
 class HomePage extends StatefulWidget {
@@ -189,16 +188,6 @@ class _HomePageState extends State<HomePage> {
                 label: const Text('删除重建'),
                 style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(48)),
-              ),
-              const SizedBox(height: 8),
-              TextButton.icon(
-                onPressed: () async {
-                  final r = await UpdateHelper.checkAndShow(context);
-                  if (!mounted) return;
-                  setState(() => _update = r);
-                },
-                icon: const Icon(Icons.system_update_alt_rounded, size: 18),
-                label: const Text('检查更新'),
               ),
             ],
           ),
