@@ -1,12 +1,12 @@
 {
-  "version": "1.4.0",
-  "build": 6,
-  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.4.0/app-release.apk",
+  "version": "1.4.1",
+  "build": 7,
+  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.4.1/app-release.apk",
   "changelog": [
-    "新增：可以给 TA 发图片了——相册选图或现场拍一张，TA 能看懂图里的内容",
-    "发的图片会长期保存在手机里，翻聊天记录随时能回看，点开可放大",
-    "对话里最近几张图会随上下文一起记住，隔几句聊到图还能接得上",
-    "说明：图片识别由 DeepSeek 视觉模型支持，需要网络正常"
+    "调教：大幅削弱 AI 腔——封杀「我理解你的感受」这类客服金句",
+    "调教：不许每条都接一句+关心一句+抛问题，允许敷衍、简短、语气词收尾",
+    "调教：内置同一句话的真人回法对照示例，让她照着学",
+    "说明：人设和聊天记录完全不受影响，只改了说话风格"
   ],
   "published_at": "2026-11-13",
   "min_supported": "1.1.0",
