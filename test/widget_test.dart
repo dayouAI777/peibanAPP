@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:peiban_app/data/emoji_kit.dart';
+import 'package:peiban_app/models/chat_background.dart';
 import 'package:peiban_app/models/persona_space.dart';
+import 'package:peiban_app/models/style_example.dart';
 import 'package:peiban_app/models/user_note.dart';
 import 'package:peiban_app/services/context_builder.dart';
 import 'package:peiban_app/services/persona_analyst.dart';
@@ -89,5 +91,44 @@ void main() {
     expect(EmojiKit.groups.length, 8);
     expect(EmojiKit.all.toSet().length, EmojiKit.all.length);
     expect(EmojiKit.aiRules(0).contains('不要用任何表情'), isTrue);
+  });
+
+  test('用户亲手改的说法会进 system，只带最新 12 条', () {
+    final examples = [
+      for (int i = 0; i < 20; i++)
+        StyleExample(
+          companionId: 1,
+          trigger: '触发$i',
+          original: '错$i',
+          preferred: '对$i',
+          createdAt: i,
+        ),
+    ];
+    final system = ContextBuilder.buildSystem(
+      persona: '你是阿雾',
+      notes: const [],
+      chunks: const [],
+      window: 1000,
+      styleExamples: examples,
+    );
+    expect(system.contains('改后'), isTrue);
+    expect(system.contains('对19'), isTrue); // 最新的在
+    expect(system.contains('对8'), isTrue); // 刚好第 12 条
+    expect(system.contains('对7'), isFalse); // 再早的砍掉，别稀释人设
+  });
+
+  test('聊天背景读坏了退回默认，图片丢了也不白屏', () {
+    expect(ChatBackground.decode('').type, 'none');
+    expect(ChatBackground.decode('这不是 json').type, 'none');
+    expect(ChatBackground.decode('{"type":"image","image_path":""}').type,
+        'none');
+    expect(ChatBackground.decode('{"type":"preset","preset_id":"不存在"}').type,
+        'none');
+
+    final p = ChatBackground.decode(
+        '{"type":"preset","preset_id":"peach","veil":0.4}');
+    expect(p.isPreset, isTrue);
+    expect(p.veil, 0.4);
+    expect(ChatPresets.all.length, greaterThanOrEqualTo(4));
   });
 }

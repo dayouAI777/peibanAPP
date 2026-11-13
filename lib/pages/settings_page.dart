@@ -244,7 +244,28 @@ class _SettingsPageState extends State<SettingsPage> {
 
           // ——— 聊天与记忆 ———
           Text('聊天与记忆', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.wallpaper_rounded),
+            title: const Text('聊天背景'),
+            subtitle: const Text('预设渐变，或用自己相册里的图'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.pushNamed(context, '/background'),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.edit_note_rounded),
+            title: const Text('她学到的说法'),
+            subtitle: Text(
+              context.watch<AppState>().styleExamples.isEmpty
+                  ? '长按她说的话，写一遍她该怎么说'
+                  : '${context.watch<AppState>().styleExamples.length} 条，长按消息可随时加',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.pushNamed(context, '/style-examples'),
+          ),
+          const Divider(height: 24),
           Text('TA 用表情：${EmojiKit.labelOf(_emojiLevel)}'),
           DropdownButton<int>(
             value: _emojiLevel,
@@ -376,7 +397,8 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const SizedBox(height: 10),
           Text(
-            '对话风格会在后台自动学习（只学说话方式，不记聊天内容），只存本机，不用管它。',
+            '对话风格会在后台自动学习（只学说话方式，不记聊天内容），只存本机，不用管它。'
+            '想直接纠正她，就在聊天里长按她说的话。',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: Colors.grey.shade600, height: 1.6),
           ),

@@ -2,11 +2,13 @@ import 'package:flutter/foundation.dart';
 
 import '../data/db_helper.dart';
 import '../data/prefs.dart';
+import '../models/chat_background.dart';
 import '../models/companion.dart';
 import '../models/memory_chunk.dart';
 import '../models/message.dart';
 import '../models/persona_space.dart';
 import '../models/speech_profile.dart';
+import '../models/style_example.dart';
 import '../models/user_note.dart';
 import '../services/chat_images.dart';
 import '../services/context_builder.dart';
@@ -29,7 +31,11 @@ class AppState extends ChangeNotifier {
   List<ChatMessage> messages = [];
   List<UserNote> notes = [];
   List<MemoryChunk> chunks = [];
+
+  /// 用户亲手改过的「她该这么说」范例，直接进 system prompt。
+  List<StyleExample> styleExamples = [];
   SpeechProfile speech = SpeechProfile.empty();
+  ChatBackground chatBg = ChatBackground.initial;
   bool busy = false;
   bool configured = false;
   int contextWindow = ContextBuilder.defaultWindow;
@@ -41,6 +47,7 @@ class AppState extends ChangeNotifier {
   Future<void> load() async {
     configured = await Prefs.configured();
     contextWindow = await Prefs.contextLimit();
+    chatBg = await Prefs.chatBackground();
     companion = await DbHelper.instance.firstCompanion();
     messages = companion == null
         ? []
@@ -48,6 +55,9 @@ class AppState extends ChangeNotifier {
     chunks = companion == null
         ? []
         : await DbHelper.instance.memoryChunks(companion!.id!);
+    styleExamples = companion == null
+        ? []
+        : await DbHelper.instance.styleExamples(companion!.id!);
     notes = await DbHelper.instance.userNotes();
     try {
       final raw = await Prefs.speechProfile();
@@ -118,6 +128,7 @@ class AppState extends ChangeNotifier {
     messages = [first];
     chunks = [];
     notes = [];
+    styleExamples = [];
     _userMessageCount = 0;
     error = null;
     notifyListeners();
@@ -152,6 +163,7 @@ class AppState extends ChangeNotifier {
         emojiLevel: await Prefs.emojiLevel(),
         speech: speech,
         appearance: _appearanceOf(c),
+        styleExamples: styleExamples,
       );
 
   Future<void> send(String text, {String? imagePath}) async {
@@ -289,7 +301,82 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // ——— 亲手改她的说法 ———
+
+  /// 长按她的某条消息 → 用户写出「她本来该这么说」。
+  ///
+  /// 存下来的是具体范例（触发句 → 错答 → 正答），会进 system prompt 当示范；
+  /// [replaceMessage] 为真时顺手把这条历史消息也换成用户写的版本，
+  /// 这样上下文里留着的也是对的，而不是让她继续照着自己的错话往下聊。
+  Future<void> correctReply({
+    required ChatMessage msg,
+    required String preferred,
+    bool replaceMessage = true,
+  }) async {
+    final c = companion;
+    final id = msg.id;
+    final text = preferred.trim();
+    if (c == null || id == null || text.isEmpty) return;
+
+    // 触发句：这条之前最近一句用户说的话
+    String trigger = '';
+    final at = messages.indexWhere((m) => m.id == id);
+    if (at > 0) {
+      for (int i = at - 1; i >= 0; i--) {
+        if (messages[i].fromUser) {
+          trigger = messages[i].content.trim();
+          break;
+        }
+      }
+    }
+
+    final original = msg.content.trim();
+    // 同一条原话 + 同一个改法只记一次，避免反复长按把 prompt 塞满重复项
+    final dup = styleExamples.any(
+        (e) => e.original == original && e.preferred == text);
+    if (!dup) {
+      await DbHelper.instance.insertStyleExample(StyleExample(
+        companionId: c.id!,
+        trigger: trigger,
+        original: original,
+        preferred: text,
+        createdAt: DateTime.now().millisecondsSinceEpoch,
+      ));
+      styleExamples = await DbHelper.instance.styleExamples(c.id!);
+    }
+
+    if (replaceMessage) {
+      await DbHelper.instance.updateMessageContent(id, text);
+      if (at >= 0) {
+        messages[at] = ChatMessage(
+          id: msg.id,
+          companionId: msg.companionId,
+          role: msg.role,
+          content: text,
+          createdAt: msg.createdAt,
+          isProactive: msg.isProactive,
+          imagePath: msg.imagePath,
+        );
+      }
+    }
+    notifyListeners();
+  }
+
+  Future<void> deleteStyleExample(int id) async {
+    await DbHelper.instance.deleteStyleExample(id);
+    if (companion != null) {
+      styleExamples = await DbHelper.instance.styleExamples(companion!.id!);
+    }
+    notifyListeners();
+  }
+
   // ——— 设置 / 数据管理 ———
+
+  Future<void> setChatBackground(ChatBackground b) async {
+    chatBg = b;
+    await Prefs.setChatBackground(b);
+    notifyListeners();
+  }
 
   /// 只改外观：头像 + 昵称。性格字段绝不触碰。
   Future<void> updateAppearance({
@@ -344,6 +431,7 @@ class AppState extends ChangeNotifier {
     messages = [];
     chunks = [];
     notes = [];
+    styleExamples = [];
     _userMessageCount = 0;
     error = null;
     notifyListeners();

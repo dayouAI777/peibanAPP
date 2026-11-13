@@ -2,6 +2,7 @@ import '../data/emoji_kit.dart';
 import '../models/memory_chunk.dart';
 import '../models/message.dart';
 import '../models/speech_profile.dart';
+import '../models/style_example.dart';
 import '../models/user_note.dart';
 import 'chat_images.dart';
 
@@ -28,6 +29,9 @@ class ContextBuilder {
   /// 最近多少张图片随请求发原图（每张图要花不少 token，更早的只留文字标记）。
   static const int maxImageAttachments = 4;
 
+  /// 用户亲手改过的说法，最多带多少条（每条一两句话，太多会稀释人设）。
+  static const int maxStyleExamples = 12;
+
   static String buildSystem({
     required String persona,
     required List<UserNote> notes,
@@ -36,6 +40,7 @@ class ContextBuilder {
     int emojiLevel = 2,
     SpeechProfile? speech,
     String appearance = '',
+    List<StyleExample> styleExamples = const <StyleExample>[],
   }) {
     final b = StringBuffer(persona.trim());
 
@@ -119,6 +124,30 @@ class ContextBuilder {
     b.writeln('对方说「嗯嗯」：');
     b.writeln('✗ 怎么啦？是不是有什么心事呀，可以跟我说说～');
     b.writeln('✓ 咋了 想啥呢');
+
+    // 用户亲手改过的说法：具体范例对模型的约束力远强于抽象规则，
+    // 所以放在最后（离生成最近），优先级天然最高。
+    if (styleExamples.isNotEmpty) {
+      final picked = styleExamples.length > maxStyleExamples
+          ? styleExamples.sublist(styleExamples.length - maxStyleExamples)
+          : styleExamples;
+      b.writeln('\n【她这么说被改过 · 必须照「改后」来】');
+      b.writeln('下面每一条都是对方亲手改的：「改前」是她错的回答，「改后」才是对的。'
+          '遇到同类场合，语气、长度、措辞一律向「改后」看齐。');
+      b.writeln('不要照抄具体内容（换了话题就按同样的味道重新说），'
+          '也不要提起「你改过我」这件事。');
+      for (final e in picked) {
+        final p = e.preferred.trim();
+        if (p.isEmpty) continue;
+        final buf = StringBuffer('- ');
+        if (e.trigger.trim().isNotEmpty) buf.write('对方说「${e.trigger.trim()}」→ ');
+        if (e.original.trim().isNotEmpty) {
+          buf.write('她说错了「${e.original.trim()}」→ ');
+        }
+        buf.write('应该「$p」');
+        b.writeln(buf.toString());
+      }
+    }
 
     return b.toString();
   }

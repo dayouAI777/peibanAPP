@@ -4,11 +4,13 @@ import 'package:sqflite/sqflite.dart';
 import '../models/companion.dart';
 import '../models/memory_chunk.dart';
 import '../models/message.dart';
+import '../models/style_example.dart';
 import '../models/user_note.dart';
 
 /// 本地数据库。所有数据都在这台手机的 App 沙盒里，不上传任何服务器。
 /// v2：新增人设空间、用户行为手册、旧对话压缩摘要三张/列。
 /// v3：messages 加 image_path 列（用户发图片，模型看图）。
+/// v4：新增 style_examples 表（用户长按消息、亲手改的「她该这么说」范例）。
 class DbHelper {
   DbHelper._();
   static final DbHelper instance = DbHelper._();
@@ -20,7 +22,7 @@ class DbHelper {
     final dir = await getDatabasesPath();
     _db = await openDatabase(
       p.join(dir, 'peiban.db'),
-      version: 3,
+      version: 4,
       onCreate: (d, _) async => _createAll(d),
       onUpgrade: (d, oldV, _) async {
         if (oldV < 2) {
@@ -33,6 +35,9 @@ class DbHelper {
         if (oldV < 3) {
           await d.execute(
               "ALTER TABLE messages ADD COLUMN image_path TEXT NOT NULL DEFAULT ''");
+        }
+        if (oldV < 4) {
+          await _createStyleExamples(d);
         }
       },
     );
@@ -66,6 +71,7 @@ class DbHelper {
         'CREATE INDEX idx_messages_companion ON messages(companion_id, id)');
     await _createNotes(d);
     await _createChunks(d);
+    await _createStyleExamples(d);
   }
 
   Future<void> _createNotes(Database d) async {
@@ -94,6 +100,22 @@ class DbHelper {
     ''');
     await d.execute(
         'CREATE INDEX IF NOT EXISTS idx_chunks ON memory_chunks(companion_id, from_id)');
+  }
+
+  /// 用户亲手改过的「她该这么说」范例。属于角色，删角色时一起清掉。
+  Future<void> _createStyleExamples(Database d) async {
+    await d.execute('''
+      CREATE TABLE IF NOT EXISTS style_examples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        companion_id INTEGER NOT NULL,
+        trigger_text TEXT NOT NULL DEFAULT '',
+        original TEXT NOT NULL,
+        preferred TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await d.execute(
+        'CREATE INDEX IF NOT EXISTS idx_style ON style_examples(companion_id, id)');
   }
 
   // ——— 角色：唯一、定稿后不可改（所以这里故意没有 update 方法）———
@@ -161,12 +183,48 @@ class DbHelper {
     return (await db).insert('messages', m.toMap()..remove('id'));
   }
 
+  /// 只改内容，不动时间、不动角色归属——用于「长按改她这句话」。
+  Future<void> updateMessageContent(int id, String content) async {
+    await (await db).update(
+      'messages',
+      {'content': content},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  /// 清空聊天记录。
+  /// 注意：style_examples 是用户亲手写的调教成果，不算「聊天记录」，这里保留；
+  /// 只有删角色（deleteEverything）才会一起清掉。
   Future<void> clearMessages(int companionId) async {
     final d = await db;
     await d.delete('messages',
         where: 'companion_id = ?', whereArgs: [companionId]);
     await d.delete('memory_chunks',
         where: 'companion_id = ?', whereArgs: [companionId]);
+  }
+
+  // ——— 用户亲手改的说法 ———
+  /// 取最新的若干条（id 倒序后再翻正，交给 prompt 按时间顺序排）。
+  Future<List<StyleExample>> styleExamples(int companionId,
+      {int limit = 40}) async {
+    final rows = await (await db).query(
+      'style_examples',
+      where: 'companion_id = ?',
+      whereArgs: [companionId],
+      orderBy: 'id DESC',
+      limit: limit,
+    );
+    return rows.map(StyleExample.fromMap).toList().reversed.toList();
+  }
+
+  Future<int> insertStyleExample(StyleExample e) async {
+    return (await db).insert('style_examples', e.toMap()..remove('id'));
+  }
+
+  Future<void> deleteStyleExample(int id) async {
+    await (await db)
+        .delete('style_examples', where: 'id = ?', whereArgs: [id]);
   }
 
   // ——— 用户行为记录手册 ———
@@ -206,6 +264,7 @@ class DbHelper {
     await d.delete('messages');
     await d.delete('memory_chunks');
     await d.delete('user_notes');
+    await d.delete('style_examples');
     await d.delete('companions');
   }
 }

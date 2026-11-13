@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'pages/appearance_page.dart';
+import 'pages/background_page.dart';
 import 'pages/chat_page.dart';
 import 'pages/config_page.dart';
 import 'pages/home_page.dart';
 import 'pages/manual_page.dart';
 import 'pages/persona_page.dart';
 import 'pages/settings_page.dart';
+import 'pages/style_examples_page.dart';
 import 'services/proactive_service.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
@@ -70,6 +72,8 @@ class PeiBanApp extends StatelessWidget {
           '/settings': (_) => const SettingsPage(),
           '/manual': (_) => const ManualPage(),
           '/appearance': (_) => const AppearancePage(),
+          '/background': (_) => const BackgroundPage(),
+          '/style-examples': (_) => const StyleExamplesPage(),
         },
       ),
     );

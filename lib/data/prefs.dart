@@ -1,5 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/chat_background.dart';
+
 /// 主动消息的一组设置。
 class ProactiveSettings {
   final bool enabled;
@@ -35,6 +37,19 @@ class Prefs {
   static const _kLastUpdateCheck = 'last_update_check';
   static const _kEmojiLevel = 'emoji_level';
   static const _kSpeechProfile = 'speech_profile';
+  static const _kChatBackground = 'chat_background';
+
+  /// 聊天背景（JSON）。存不了或读坏了都退回默认，绝不让聊天页白屏。
+  static Future<ChatBackground> chatBackground() async {
+    final raw =
+        (await SharedPreferences.getInstance()).getString(_kChatBackground) ??
+            '';
+    return ChatBackground.decode(raw);
+  }
+
+  static Future<void> setChatBackground(ChatBackground b) async =>
+      (await SharedPreferences.getInstance())
+          .setString(_kChatBackground, b.encode());
 
   /// 后台静默学习的说话方式画像（JSON），只存本机。
   static Future<String> speechProfile() async =>

@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
@@ -8,10 +9,14 @@ import '../models/companion.dart';
 import '../models/message.dart';
 import '../services/chat_images.dart';
 import '../state/app_state.dart';
+import '../widgets/chat_background_view.dart';
+import '../widgets/correct_reply_dialog.dart';
 import '../widgets/emoji_picker.dart';
 
 /// 聊天页。输入框旁有表情面板，点一下插入到光标处；
 /// AI 回复里的表情由 system prompt 里的表情规则控制。
+///
+/// 长按她的消息 →「改她这句怎么说」：用户写一遍对的，存进她的说话风格。
 ///
 /// 键盘弹出时 viewInsets 变化会让列表可视高度缩水，
 /// 这里用 WidgetsBindingObserver 监听尺寸变化，始终把列表贴回底部。
@@ -129,6 +134,58 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _keepAtBottom();
   }
 
+  /// 长按气泡：她的消息能改说法，谁的都能复制。
+  Future<void> _longPress(ChatMessage m) async {
+    final app = context.read<AppState>();
+    final kind = await showModalBottomSheet<String>(
+      context: context,
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (!m.fromUser)
+              ListTile(
+                leading: const Icon(Icons.edit_note_rounded),
+                title: const Text('改她这句怎么说'),
+                subtitle: const Text('你写一遍对的，她以后照着说'),
+                onTap: () => Navigator.pop(sheetCtx, 'fix'),
+              ),
+            if (m.content.trim().isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.copy_rounded),
+                title: const Text('复制'),
+                onTap: () => Navigator.pop(sheetCtx, 'copy'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || kind == null) return;
+
+    if (kind == 'copy') {
+      await Clipboard.setData(ClipboardData(text: m.content));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('复制好了'),
+        duration: Duration(seconds: 1),
+      ));
+      return;
+    }
+
+    final r = await showCorrectReplyDialog(context, original: m.content);
+    if (r == null || !mounted) return;
+    await app.correctReply(
+      msg: m,
+      preferred: r.text,
+      replaceMessage: r.replace,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(r.replace ? '改好了，她以后就照这个说' : '记下了，她以后就照这个说'),
+      duration: const Duration(seconds: 2),
+    ));
+  }
+
   /// 点气泡里的图，全屏放大看。
   void _viewImage(BuildContext context, String path) {
     showDialog(
@@ -235,7 +292,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       );
     }
 
-    final bubble = Flexible(child: contentWidget);
+    final bubble = Flexible(
+      child: GestureDetector(
+        onLongPress: () => _longPress(m),
+        child: contentWidget,
+      ),
+    );
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
@@ -323,165 +385,179 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            if (s.error != null)
-              Material(
-                color: theme.colorScheme.errorContainer,
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      body: Stack(
+        children: [
+          Positioned.fill(child: ChatBackgroundView(bg: s.chatBg)),
+          SafeArea(
+            child: Column(
+              children: [
+                if (s.error != null)
+                  Material(
+                    color: theme.colorScheme.errorContainer,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(s.error!,
+                                style: TextStyle(
+                                    color: theme.colorScheme.onErrorContainer,
+                                    fontSize: 13)),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: s.dismissError,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                Expanded(
+                  child: s.messages.isEmpty
+                      ? Center(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 11),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.78),
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Text('说点什么吧，或者只是打个招呼',
+                                style: TextStyle(color: Colors.grey.shade700)),
+                          ),
+                        )
+                      : ListView.builder(
+                          controller: _scroll,
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          itemCount: s.messages.length,
+                          itemBuilder: (_, i) =>
+                              _bubble(s.messages[i], c, theme),
+                        ),
+                ),
+                if (s.busy)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 18, bottom: 4),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  ),
+                if (_pickedImage != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                    child: Row(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.file(
+                            File(_pickedImage!),
+                            width: 56,
+                            height: 56,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text('图片已就绪，加点字或直接发送',
+                              style: TextStyle(
+                                  fontSize: 12, color: Colors.grey.shade600)),
+                        ),
+                        IconButton(
+                          tooltip: '移除图片',
+                          icon: const Icon(Icons.close, size: 20),
+                          onPressed: () => setState(() => _pickedImage = null),
+                        ),
+                      ],
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
                   child: Row(
                     children: [
-                      Expanded(
-                        child: Text(s.error!,
-                            style: TextStyle(
-                                color: theme.colorScheme.onErrorContainer,
-                                fontSize: 13)),
+                      IconButton(
+                        tooltip: '表情',
+                        icon: Icon(_showEmoji
+                            ? Icons.keyboard_outlined
+                            : Icons.sentiment_satisfied_alt_outlined),
+                        onPressed: () {
+                          FocusScope.of(context).unfocus();
+                          setState(() => _showEmoji = !_showEmoji);
+                          _keepAtBottom();
+                        },
                       ),
                       IconButton(
-                        icon: const Icon(Icons.close, size: 18),
-                        onPressed: s.dismissError,
+                        tooltip: '发图片',
+                        icon: const Icon(Icons.add_photo_alternate_outlined),
+                        onPressed: s.busy
+                            ? null
+                            : () {
+                                showModalBottomSheet(
+                                  context: context,
+                                  builder: (_) => SafeArea(
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        ListTile(
+                                          leading:
+                                              const Icon(Icons.photo_outlined),
+                                          title: const Text('从相册选'),
+                                          onTap: () {
+                                            Navigator.pop(context);
+                                            _pickImage(ImageSource.gallery);
+                                          },
+                                        ),
+                                        ListTile(
+                                          leading: const Icon(
+                                              Icons.photo_camera_outlined),
+                                          title: const Text('拍一张'),
+                                          onTap: () {
+                                            Navigator.pop(context);
+                                            _pickImage(ImageSource.camera);
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                      ),
+                      Expanded(
+                        child: TextField(
+                          controller: _input,
+                          focusNode: _focus,
+                          minLines: 1,
+                          maxLines: 4,
+                          textInputAction: TextInputAction.send,
+                          onTap: () {
+                            if (_showEmoji) setState(() => _showEmoji = false);
+                            _keepAtBottom();
+                          },
+                          onSubmitted: (_) => _send(s),
+                          decoration: const InputDecoration(
+                            hintText: '说点什么，或者只是打个招呼',
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      IconButton.filled(
+                        onPressed: s.busy ? null : () => _send(s),
+                        icon: const Icon(Icons.arrow_upward_rounded),
                       ),
                     ],
                   ),
                 ),
-              ),
-            Expanded(
-              child: s.messages.isEmpty
-                  ? Center(
-                      child: Text('说点什么吧，或者只是打个招呼',
-                          style: TextStyle(color: Colors.grey.shade500)),
-                    )
-                  : ListView.builder(
-                      controller: _scroll,
-                      keyboardDismissBehavior:
-                          ScrollViewKeyboardDismissBehavior.onDrag,
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      itemCount: s.messages.length,
-                      itemBuilder: (_, i) =>
-                          _bubble(s.messages[i], c, theme),
-                    ),
+                if (_showEmoji) EmojiPicker(onTap: _insertEmoji),
+              ],
             ),
-            if (s.busy)
-              const Padding(
-                padding: EdgeInsets.only(left: 18, bottom: 4),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                ),
-              ),
-            if (_pickedImage != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-                child: Row(
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.file(
-                        File(_pickedImage!),
-                        width: 56,
-                        height: 56,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text('图片已就绪，加点字或直接发送',
-                          style: TextStyle(
-                              fontSize: 12, color: Colors.grey.shade600)),
-                    ),
-                    IconButton(
-                      tooltip: '移除图片',
-                      icon: const Icon(Icons.close, size: 20),
-                      onPressed: () => setState(() => _pickedImage = null),
-                    ),
-                  ],
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-              child: Row(
-                children: [
-                  IconButton(
-                    tooltip: '表情',
-                    icon: Icon(_showEmoji
-                        ? Icons.keyboard_outlined
-                        : Icons.sentiment_satisfied_alt_outlined),
-                    onPressed: () {
-                      FocusScope.of(context).unfocus();
-                      setState(() => _showEmoji = !_showEmoji);
-                      _keepAtBottom();
-                    },
-                  ),
-                  IconButton(
-                    tooltip: '发图片',
-                    icon: const Icon(Icons.add_photo_alternate_outlined),
-                    onPressed: s.busy
-                        ? null
-                        : () {
-                            showModalBottomSheet(
-                              context: context,
-                              builder: (_) => SafeArea(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    ListTile(
-                                      leading: const Icon(Icons.photo_outlined),
-                                      title: const Text('从相册选'),
-                                      onTap: () {
-                                        Navigator.pop(context);
-                                        _pickImage(ImageSource.gallery);
-                                      },
-                                    ),
-                                    ListTile(
-                                      leading: const Icon(Icons.photo_camera_outlined),
-                                      title: const Text('拍一张'),
-                                      onTap: () {
-                                        Navigator.pop(context);
-                                        _pickImage(ImageSource.camera);
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                  ),
-                  Expanded(
-                    child: TextField(
-                      controller: _input,
-                      focusNode: _focus,
-                      minLines: 1,
-                      maxLines: 4,
-                      textInputAction: TextInputAction.send,
-                      onTap: () {
-                        if (_showEmoji) setState(() => _showEmoji = false);
-                        _keepAtBottom();
-                      },
-                      onSubmitted: (_) => _send(s),
-                      decoration: const InputDecoration(
-                        hintText: '说点什么，或者只是打个招呼',
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  IconButton.filled(
-                    onPressed: s.busy ? null : () => _send(s),
-                    icon: const Icon(Icons.arrow_upward_rounded),
-                  ),
-                ],
-              ),
-            ),
-            if (_showEmoji)
-              EmojiPicker(onTap: _insertEmoji),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
