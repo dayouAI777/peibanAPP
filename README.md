@@ -11,7 +11,7 @@
 - **定位**：自用 / 小范围分享，**不商用**
 
 > 仓库已含完整 Android 工程，clone 下来装好 Flutter 就能编译。
-> 当前版本 **1.2.0+3**，实测工具链：Flutter 3.50.0 / Dart 3.14.0 · JDK 21 · Android SDK 36 · Gradle 9.5.0 · AGP 9.3.1。
+> 当前版本 **1.2.1+4**，实测工具链：Flutter 3.50.0 / Dart 3.14.0 · JDK 21 · Android SDK 36 · Gradle 9.5.0 · AGP 9.3.1。
 
 ---
 

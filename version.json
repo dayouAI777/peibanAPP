@@ -1,12 +1,11 @@
 {
-  "version": "1.2.0",
-  "build": 3,
-  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.2.0/app-release.apk",
+  "version": "1.2.1",
+  "build": 4,
+  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.2.1/app-release.apk",
   "changelog": [
-    "人设页：AI 的每条改进意见下面直接有输入框，填完一次重新解析，不用来回对照",
-    "头像与昵称定稿后仍可修改（性格、说话方式等人设内容依旧不可改）",
-    "回复更生动：默认每条自然带 1 个小表情，主动消息也会带",
-    "检查更新做成显眼按钮，首页也有入口"
+    "修复：下载升级包偶发连不上 GitHub、要手动点第二次的问题",
+    "下载设 15 秒连接超时并自动重试 3 次，弹窗显示重试进度",
+    "报错改成中文说明，不再甩一长串英文异常"
   ],
   "published_at": "2026-11-13",
   "min_supported": "1.1.0",

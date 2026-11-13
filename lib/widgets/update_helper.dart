@@ -45,7 +45,7 @@ class UpdateHelper {
     );
   }
 
-  /// 发现新版时的面板：更新内容 / 下载进度 / 安装 / 忽略。
+  /// 发现新版时的面板：更新内容 / 下载进度 / 重试状态 / 安装 / 忽略。
   static Future<void> showUpdateSheet(
       BuildContext context, UpdateInfo info) async {
     final local = await _service.localVersion();
@@ -55,6 +55,7 @@ class UpdateHelper {
     var received = 0;
     var total = 0;
     String? err;
+    String? status;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -90,13 +91,20 @@ class UpdateHelper {
                     const SizedBox(height: 12),
                     LinearProgressIndicator(
                         value: total > 0 ? received / total : null),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 8),
                     Text(
-                      total > 0
-                          ? '${(received / 1024 / 1024).toStringAsFixed(1)} / ${(total / 1024 / 1024).toStringAsFixed(1)} MB'
-                          : '正在连接…',
-                      style: Theme.of(context).textTheme.bodySmall,
+                      status ?? '正在下载…',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary),
                     ),
+                    if (total > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          '${(received / 1024 / 1024).toStringAsFixed(1)} / ${(total / 1024 / 1024).toStringAsFixed(1)} MB',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
                   ],
                   if (err != null)
                     Padding(
@@ -104,7 +112,8 @@ class UpdateHelper {
                       child: Text(err!,
                           style: TextStyle(
                               color: Theme.of(context).colorScheme.error,
-                              fontSize: 13)),
+                              fontSize: 13,
+                              height: 1.6)),
                     ),
                   const SizedBox(height: 18),
                   FilledButton(
@@ -114,6 +123,9 @@ class UpdateHelper {
                             setSheet(() {
                               downloading = true;
                               err = null;
+                              status = '正在连接…';
+                              received = 0;
+                              total = 0;
                             });
                             try {
                               final path = await _service.download(
@@ -121,12 +133,15 @@ class UpdateHelper {
                                 (r, t) => setSheet(() {
                                   received = r;
                                   total = t;
+                                  if (t > 0) status = null; // 开始传数据后显示字节数
                                 }),
+                                onStatus: (s) => setSheet(() => status = s),
                               );
                               await _service.install(path);
                             } catch (e) {
                               setSheet(() {
                                 downloading = false;
+                                status = null;
                                 err =
                                     e.toString().replaceAll('Exception: ', '');
                               });

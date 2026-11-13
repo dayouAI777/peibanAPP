@@ -95,24 +95,70 @@ class UpdateService {
     }
   }
 
-  /// 下载新版 APK 到 App 私有目录，返回本地路径。
+  static const int _maxAttempts = 3;
+  static const Duration _connectTimeout = Duration(seconds: 15);
+
+  /// 下载新版 APK。国内连 GitHub 下载域名偶发 TCP 超时，
+  /// 这里做「明确超时 + 自动重试 + 说人话的报错」，不用用户手动点第二次。
   Future<String> download(
-      String url, void Function(int received, int total) onProgress) async {
+    String url,
+    void Function(int received, int total) onProgress, {
+    void Function(String status)? onStatus,
+  }) async {
     final dir = await getApplicationDocumentsDirectory();
     final path = p.join(dir.path, 'peiban-update.apk');
     final f = File(path);
     if (await f.exists()) await f.delete();
 
-    await Dio().download(
-      url,
-      path,
-      onReceiveProgress: onProgress,
-      options: Options(
-        receiveTimeout: const Duration(minutes: 10),
-        followRedirects: true,
-      ),
-    );
-    return path;
+    Object? lastError;
+    for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
+      try {
+        onProgress(0, 0);
+        onStatus?.call(attempt == 1
+            ? '正在连接…'
+            : '第 $attempt 次尝试（共 $_maxAttempts 次）…');
+        await Dio().download(
+          url,
+          path,
+          onReceiveProgress: onProgress,
+          options: Options(
+            connectTimeout: _connectTimeout,
+            sendTimeout: _connectTimeout,
+            receiveTimeout: const Duration(minutes: 5),
+            followRedirects: true,
+          ),
+        );
+        return path;
+      } catch (e) {
+        lastError = e;
+        // 删掉半成品，避免下次把半个 APK 当完整包
+        if (await f.exists()) await f.delete();
+        if (attempt < _maxAttempts) {
+          onStatus?.call('没连上，正在重试（${attempt + 1}/$_maxAttempts）…');
+          await Future.delayed(Duration(seconds: attempt));
+        }
+      }
+    }
+    throw Exception(_friendlyError(lastError));
+  }
+
+  String _friendlyError(Object? e) {
+    final s = e.toString();
+    if (s.contains('connectionTimeout') ||
+        s.contains('connection timeout') ||
+        s.contains('SocketConnection timed out') ||
+        s.contains('errno = 110')) {
+      return '连不上 GitHub 的下载服务器，自动重试 $_maxAttempts 次还是没通。'
+          '切换一下网络（Wi-Fi ↔ 流量）再点一次通常就好了，版本不会丢。';
+    }
+    if (s.contains('receiveTimeout')) {
+      return '下载中途断了（网速太慢）。换个网络再点一次，会重新下载。';
+    }
+    if (s.contains('404')) {
+      return '安装包地址失效了，检查一下 version.json 里的 apk_url。';
+    }
+    return '下载没成功，稍后再点一次。原始信息：'
+        '${s.length > 120 ? '${s.substring(0, 120)}…' : s}';
   }
 
   /// 调起系统安装界面（需要 REQUEST_INSTALL_PACKAGES 权限）。
