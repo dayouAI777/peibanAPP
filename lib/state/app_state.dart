@@ -232,6 +232,24 @@ class AppState extends ChangeNotifier {
 
   // ——— 设置 / 数据管理 ———
 
+  /// 只改外观：头像 + 昵称。性格字段绝不触碰。
+  Future<void> updateAppearance({
+    required String name,
+    required String avatarPath,
+  }) async {
+    final c = companion;
+    if (c == null || c.id == null) return;
+    final newName = name.trim().isEmpty ? c.name : name.trim();
+    await DbHelper.instance.updateAppearance(
+      id: c.id!,
+      name: newName,
+      avatarPath: avatarPath,
+    );
+    companion = c.withAppearance(name: newName, avatarPath: avatarPath);
+    notifyListeners();
+    await ProactiveService.reschedule(name: newName);
+  }
+
   Future<void> applySettings() async {
     contextWindow = await Prefs.contextLimit();
     if (companion != null) {

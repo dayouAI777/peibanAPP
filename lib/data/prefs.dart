@@ -85,9 +85,9 @@ class Prefs {
   static Future<void> setLastUpdateCheck(int v) async =>
       (await SharedPreferences.getInstance()).setInt(_kLastUpdateCheck, v);
 
-  /// 角色用表情的频率：0 关 / 1 偶尔 / 2 常用。
+  /// 角色用表情的频率：0 关 / 1 偶尔 / 2 常用（默认，回复更生动）。
   static Future<int> emojiLevel() async =>
-      (await SharedPreferences.getInstance()).getInt(_kEmojiLevel) ?? 1;
+      (await SharedPreferences.getInstance()).getInt(_kEmojiLevel) ?? 2;
 
   static Future<void> setEmojiLevel(int v) async =>
       (await SharedPreferences.getInstance()).setInt(_kEmojiLevel, v.clamp(0, 2));

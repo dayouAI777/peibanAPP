@@ -53,6 +53,21 @@ class Companion {
         personaSpace: personaSpace,
       );
 
+  /// 只改头像和昵称；性格、人设空间、开场白一律原样保留。
+  Companion withAppearance({
+    required String name,
+    required String avatarPath,
+  }) =>
+      Companion(
+        id: id,
+        name: name,
+        persona: persona,
+        greeting: greeting,
+        avatarPath: avatarPath,
+        createdAt: createdAt,
+        personaSpace: personaSpace,
+      );
+
   String encode() => jsonEncode(toMap());
 
   static Companion decode(String raw) =>

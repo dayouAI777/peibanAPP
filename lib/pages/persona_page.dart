@@ -10,8 +10,8 @@ import '../models/persona_space.dart';
 import '../services/persona_analyst.dart';
 import '../state/app_state.dart';
 
-/// 人设页：自由输入 → AI 解析、查缺补漏 → 补到齐 → 定稿。
-/// 定稿后这份性格不会再变，只能删除重建。
+/// 人设页：自由输入 → AI 解析、查缺补漏 → **在每条意见下面直接填** → 一起重新解析 → 定稿。
+/// 定稿后性格不会再变，只能删除重建（头像和昵称除外，那两项可改）。
 class PersonaPage extends StatefulWidget {
   const PersonaPage({super.key});
 
@@ -21,6 +21,7 @@ class PersonaPage extends StatefulWidget {
 
 class _PersonaPageState extends State<PersonaPage> {
   final _input = TextEditingController();
+  final Map<String, TextEditingController> _answers = {};
   String _rawInput = '';
   PersonaSpace _space = PersonaSpace.empty();
   PersonaAnalysis? _analysis;
@@ -32,7 +33,23 @@ class _PersonaPageState extends State<PersonaPage> {
   @override
   void dispose() {
     _input.dispose();
+    for (final c in _answers.values) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  /// 每次分析后，按新的缺项列表重建输入框；已消失的项释放掉。
+  void _syncAnswers(List<MissingItem> missing) {
+    final keys = missing.map((m) => m.key).toSet();
+    for (final k in _answers.keys.toList()) {
+      if (!keys.contains(k)) {
+        _answers.remove(k)!.dispose();
+      }
+    }
+    for (final m in missing) {
+      _answers.putIfAbsent(m.key, () => TextEditingController());
+    }
   }
 
   Future<void> _pickAvatar() async {
@@ -55,8 +72,28 @@ class _PersonaPageState extends State<PersonaPage> {
     }
   }
 
+  /// 把「顶部自由输入」和「每条意见下面填的答案」一起收上来，追加成一轮补充。
+  String _collectSupplements() {
+    final b = StringBuffer();
+
+    final free = _input.text.trim();
+    if (free.isNotEmpty) {
+      b.writeln(free);
+      _input.clear();
+    }
+
+    for (final m in _analysis?.missing ?? <MissingItem>[]) {
+      final v = _answers[m.key]?.text.trim() ?? '';
+      if (v.isNotEmpty) {
+        b.writeln('【补充 · ${m.label}】$v');
+        _answers[m.key]!.clear();
+      }
+    }
+    return b.toString().trim();
+  }
+
   Future<void> _analyze() async {
-    final extra = _input.text.trim();
+    final extra = _collectSupplements();
     if (_rawInput.isEmpty && extra.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('先随便写点什么，想到哪写到哪就行')));
@@ -65,13 +102,13 @@ class _PersonaPageState extends State<PersonaPage> {
     if (extra.isNotEmpty) {
       _rawInput = _rawInput.isEmpty
           ? extra
-          : '$_rawInput\n\n【补充】$extra';
-      _input.clear();
+          : '$_rawInput\n\n【第 ${_rounds + 1} 轮补充】\n$extra';
     }
     setState(() => _busy = true);
     final a = await context.read<AppState>().analyzePersona(_rawInput, _space);
     if (!mounted) return;
     setState(() {
+      _syncAnswers(a.missing);
       _analysis = a;
       _space = a.space;
       _busy = false;
@@ -94,6 +131,17 @@ class _PersonaPageState extends State<PersonaPage> {
     }
   }
 
+  Widget _analyzeButton(String label) => FilledButton.icon(
+        onPressed: _busy ? null : _analyze,
+        icon: _busy
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.auto_awesome_outlined),
+        label: Text(_busy ? 'AI 正在读…' : label),
+      );
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -108,7 +156,6 @@ class _PersonaPageState extends State<PersonaPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 严肃声明
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -117,7 +164,8 @@ class _PersonaPageState extends State<PersonaPage> {
                 ),
                 child: const Text(
                   '人设只有一份，定稿之后性格不会改变。\n'
-                  '不满意只能删除重建，不能事后修改——一个人的性格本来就不会轻易变。',
+                  '不满意只能删除重建——一个人的性格本来就不会轻易变。\n'
+                  '头像和昵称属于外观，定稿后仍可修改。',
                   style: TextStyle(height: 1.7, fontWeight: FontWeight.w500),
                 ),
               ),
@@ -152,12 +200,12 @@ class _PersonaPageState extends State<PersonaPage> {
               ),
               const SizedBox(height: 20),
 
-              Text('说说 TA 是个什么样的人',
+              Text('先说说 TA 是个什么样的人',
                   style: theme.textTheme.titleMedium),
               const SizedBox(height: 6),
               Text(
-                '不用填表，想到什么写什么：长相、脾气、说话方式、你们怎么认识的、'
-                'TA 会为什么事生气、有什么小习惯……写多写少都行，AI 会读，然后告诉你还缺什么。',
+                '想到什么写什么：长相、脾气、说话方式、你们怎么认识的、'
+                'TA 会为什么事生气、有什么小习惯……写多写少都行。',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: Colors.grey.shade600, height: 1.6),
               ),
@@ -173,18 +221,7 @@ class _PersonaPageState extends State<PersonaPage> {
                 ),
               ),
               const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: _busy ? null : _analyze,
-                icon: _busy
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.auto_awesome_outlined),
-                label: Text(_busy
-                    ? 'AI 正在读…'
-                    : (_rounds == 0 ? '让 AI 读一遍' : '补充后重新分析')),
-              ),
+              if (a == null) _analyzeButton('让 AI 读一遍'),
 
               if (a != null) ...[
                 const SizedBox(height: 24),
@@ -198,7 +235,6 @@ class _PersonaPageState extends State<PersonaPage> {
                     ),
                   ),
 
-                // 理解摘要
                 Container(
                   padding: const EdgeInsets.all(16),
                   decoration: BoxDecoration(
@@ -218,7 +254,6 @@ class _PersonaPageState extends State<PersonaPage> {
                 ),
                 const SizedBox(height: 14),
 
-                // 完整度
                 Row(
                   children: [
                     Expanded(
@@ -255,35 +290,72 @@ class _PersonaPageState extends State<PersonaPage> {
                   ],
                 ),
 
-                // 查缺补漏
+                // ——— 改进意见：每条下面直接填 ———
                 if (a.missing.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  Text('还缺这些，补一补',
+                  const SizedBox(height: 12),
+                  Text('还缺这些，直接在下面填',
                       style: theme.textTheme.titleSmall
                           ?.copyWith(fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 4),
+                  Text(
+                    '不用对照着看、也不用跑回最上面写。每条意见下面各有一个框，都填完再点最下面的按钮。',
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+                  ),
+                  const SizedBox(height: 12),
                   for (final m in a.missing)
                     Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(12),
+                      margin: const EdgeInsets.only(bottom: 14),
+                      padding: const EdgeInsets.all(14),
                       decoration: BoxDecoration(
                         color: Colors.amber.shade50,
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(14),
                       ),
-                      child: Row(
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('· '),
-                          Expanded(
-                            child: Text(m.question,
-                                style: const TextStyle(height: 1.5)),
+                          Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: Colors.amber.shade200,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(m.label,
+                                    style: const TextStyle(fontSize: 11)),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(m.question, style: const TextStyle(height: 1.5)),
+                          const SizedBox(height: 10),
+                          TextField(
+                            controller: _answers[m.key],
+                            enabled: !_busy,
+                            maxLines: 3,
+                            minLines: 2,
+                            decoration: InputDecoration(
+                              hintText: '直接写在这里…',
+                              filled: true,
+                              fillColor: Colors.white,
+                              contentPadding: const EdgeInsets.all(12),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide:
+                                    BorderSide(color: Colors.grey.shade300),
+                              ),
+                            ),
                           ),
                         ],
                       ),
                     ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 4),
+                  _analyzeButton('填好了 · 让 AI 重新解析'),
+                  const SizedBox(height: 8),
                   Text(
-                    '在上面的框里接着写，再点「补充后重新分析」。',
+                    '还有别的想补充，也可以写在最上面那个大框里，会一起收上来。',
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: Colors.grey.shade600),
                   ),
@@ -291,15 +363,14 @@ class _PersonaPageState extends State<PersonaPage> {
                   const SizedBox(height: 12),
                   Text('维度已经齐了，可以定稿。',
                       style: TextStyle(color: Colors.green.shade700)),
+                  const SizedBox(height: 10),
+                  _analyzeButton('再解析一次'),
                 ],
               ],
 
               const SizedBox(height: 26),
               FilledButton(
                 onPressed: (ready && !_finalizing) ? _finalize : null,
-                style: FilledButton.styleFrom(
-                  backgroundColor: theme.colorScheme.primary,
-                ),
                 child: _finalizing
                     ? const SizedBox(
                         width: 20,

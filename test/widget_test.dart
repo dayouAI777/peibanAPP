@@ -82,7 +82,7 @@ void main() {
     expect(system.contains('你是阿雾'), isTrue);
     expect(system.contains('习惯睡前看书'), isTrue);
     expect(system.contains('1000 句'), isTrue);
-    expect(system.contains('偶尔用表情'), isTrue);
+    expect(system.contains('小表情'), isTrue);
   });
 
   test('表情库分类齐全且无重复', () {

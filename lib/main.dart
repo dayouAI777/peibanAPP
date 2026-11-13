@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'pages/appearance_page.dart';
 import 'pages/chat_page.dart';
 import 'pages/config_page.dart';
 import 'pages/home_page.dart';
@@ -68,6 +69,7 @@ class PeiBanApp extends StatelessWidget {
           '/chat': (_) => const ChatPage(autoProactive: false),
           '/settings': (_) => const SettingsPage(),
           '/manual': (_) => const ManualPage(),
+          '/appearance': (_) => const AppearancePage(),
         },
       ),
     );

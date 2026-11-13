@@ -103,6 +103,22 @@ class DbHelper {
     return (await db).insert('companions', m);
   }
 
+  /// 只允许改外观：头像 + 昵称。
+  /// 性格（persona）、人设空间（persona_space）、开场白一律不在这个方法里，
+  /// 数据库层就不给改性格的口子。
+  Future<void> updateAppearance({
+    required int id,
+    required String name,
+    required String avatarPath,
+  }) async {
+    await (await db).update(
+      'companions',
+      {'name': name, 'avatar_path': avatarPath},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
   // ——— 聊天记录 ———
   Future<List<ChatMessage>> messages(int companionId,
       {int limit = 1000}) async {

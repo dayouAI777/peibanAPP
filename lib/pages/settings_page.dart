@@ -3,9 +3,9 @@ import 'package:provider/provider.dart';
 
 import '../data/emoji_kit.dart';
 import '../data/prefs.dart';
-import '../models/update_info.dart';
 import '../services/update_service.dart';
 import '../state/app_state.dart';
+import '../widgets/update_helper.dart';
 
 /// 设置页。API Key 只写进本机，不进仓库、不进 APK、不上传。
 class SettingsPage extends StatefulWidget {
@@ -25,12 +25,13 @@ class _SettingsPageState extends State<SettingsPage> {
 
   late ProactiveSettings _s;
   double _temperature = 1.25;
-  int _emojiLevel = 1;
+  int _emojiLevel = 2;
   int _contextWindow = 1000;
   bool _manualEnabled = true;
   bool _autoUpdate = true;
   String _versionText = '—';
   String? _testMessage;
+  String? _updateStatus;
   bool _testOk = false;
 
   final _updateService = UpdateService();
@@ -102,117 +103,19 @@ class _SettingsPageState extends State<SettingsPage> {
         const SnackBar(content: Text('存好了，通知时间也重新排过了')));
   }
 
-  Future<void> _checkUpdate({bool manual = false}) async {
+  /// 「检查更新」按钮：有新版弹升级面板，没有也弹明确结果，并把结果常驻显示。
+  Future<void> _checkUpdate() async {
     setState(() => _checking = true);
-    final r = await _updateService.check();
+    final r = await UpdateHelper.checkAndShow(context);
     if (!mounted) return;
-    setState(() => _checking = false);
-    if (r.hasUpdate && r.info != null) {
-      _showUpdate(r.info!);
-    } else if (manual) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(r.error != null
-            ? '检查失败：${r.error}'
-            : '已是最新版 ${r.local.version}+${r.local.build}'),
-      ));
-    }
-  }
-
-  void _showUpdate(UpdateInfo info) {
-    var downloading = false;
-    var received = 0;
-    var total = 0;
-    String? err;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (sheetCtx) => StatefulBuilder(
-        builder: (sheetCtx, setSheet) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 20, 22, 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text('新版 ${info.version}',
-                    style: Theme.of(context).textTheme.titleLarge),
-                const SizedBox(height: 6),
-                Text('发布于 ${info.publishedAt} · 当前 $_versionText',
-                    style: Theme.of(context).textTheme.bodySmall),
-                const SizedBox(height: 16),
-                for (final line in info.changelog)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text('·  '),
-                        Expanded(child: Text(line)),
-                      ],
-                    ),
-                  ),
-                if (downloading) ...[
-                  const SizedBox(height: 12),
-                  LinearProgressIndicator(
-                    value: total > 0 ? received / total : null,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    total > 0
-                        ? '${(received / 1024 / 1024).toStringAsFixed(1)} / ${(total / 1024 / 1024).toStringAsFixed(1)} MB'
-                        : '正在连接…',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-                if (err != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 10),
-                    child: Text(err!,
-                        style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                            fontSize: 13)),
-                  ),
-                const SizedBox(height: 18),
-                FilledButton(
-                  onPressed: downloading
-                      ? null
-                      : () async {
-                          setSheet(() {
-                            downloading = true;
-                            err = null;
-                          });
-                          try {
-                            final path = await _updateService.download(
-                              info.apkUrl,
-                              (r, t) => setSheet(() {
-                                received = r;
-                                total = t;
-                              }),
-                            );
-                            await _updateService.install(path);
-                          } catch (e) {
-                            setSheet(() {
-                              downloading = false;
-                              err = e.toString().replaceAll('Exception: ', '');
-                            });
-                          }
-                        },
-                  child: Text(downloading ? '下载中…' : '下载并安装'),
-                ),
-                TextButton(
-                  onPressed: () async {
-                    await Prefs.setIgnoredBuild(info.build);
-                    if (sheetCtx.mounted) Navigator.pop(sheetCtx);
-                  },
-                  child: const Text('忽略这个版本'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    setState(() {
+      _checking = false;
+      _updateStatus = r.error != null
+          ? '上次检查失败：${r.error}'
+          : (r.hasUpdate
+              ? '上次检查：发现新版 ${r.info!.version}'
+              : '上次检查：已是最新版 ${r.local.version}+${r.local.build}');
+    });
   }
 
   Future<void> _confirm(
@@ -261,19 +164,32 @@ class _SettingsPageState extends State<SettingsPage> {
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.system_update_alt_rounded),
             title: Text('当前版本 $_versionText'),
-            subtitle: const Text('版本清单托管在 GitHub 仓库的 version.json'),
-            trailing: _checking
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.chevron_right),
-            onTap: _checking ? null : () => _checkUpdate(manual: true),
+            subtitle: const Text('Git 仓库 version.json 作后台；App 主动查，不是推送'),
           ),
+          OutlinedButton.icon(
+            onPressed: _checking ? null : _checkUpdate,
+            icon: _checking
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.refresh_rounded, size: 18),
+            label: Text(_checking ? '正在检查…' : '检查更新'),
+            style: OutlinedButton.styleFrom(
+                minimumSize: const Size.fromHeight(48)),
+          ),
+          if (_updateStatus != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(_updateStatus!,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: Colors.grey.shade700)),
+            ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             value: _autoUpdate,
             title: const Text('启动时自动检查更新'),
+            subtitle: const Text('只检查、不自动下载；发现新版会在首页显示提示'),
             onChanged: (v) => setState(() => _autoUpdate = v),
           ),
           const Divider(height: 28),
@@ -333,8 +249,8 @@ class _SettingsPageState extends State<SettingsPage> {
             isExpanded: true,
             items: const [
               DropdownMenuItem(value: 0, child: Text('不用表情')),
-              DropdownMenuItem(value: 1, child: Text('偶尔用（默认）')),
-              DropdownMenuItem(value: 2, child: Text('常用')),
+              DropdownMenuItem(value: 1, child: Text('偶尔用')),
+              DropdownMenuItem(value: 2, child: Text('常用（默认，回复生动）')),
             ],
             onChanged: (v) => setState(() => _emojiLevel = v ?? 1),
           ),
@@ -346,8 +262,7 @@ class _SettingsPageState extends State<SettingsPage> {
             max: 5000,
             divisions: 24,
             label: '$_contextWindow 句',
-            onChanged: (v) =>
-                setState(() => _contextWindow = v.round()),
+            onChanged: (v) => setState(() => _contextWindow = v.round()),
           ),
           Text(
             '窗口内的对话都记得住；更早的会由 AI 压成摘要长期带着，不会丢，也不会每次把上千句原文全发出去。',
@@ -419,7 +334,8 @@ class _SettingsPageState extends State<SettingsPage> {
                         enabled: true,
                         perDay: _s.perDay,
                         startHour: v ?? 9,
-                        endHour: _s.endHour > (v ?? 9) ? _s.endHour : (v ?? 9) + 1,
+                        endHour:
+                            _s.endHour > (v ?? 9) ? _s.endHour : (v ?? 9) + 1,
                       )),
                 ),
                 const Text(' — '),
@@ -464,6 +380,14 @@ class _SettingsPageState extends State<SettingsPage> {
 
           ListTile(
             contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.edit_outlined),
+            title: const Text('修改头像与昵称'),
+            subtitle: const Text('只改外观；性格定稿后不可改'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.pushNamed(context, '/appearance'),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.article_outlined),
             title: const Text('查看人设档案（只读）'),
             subtitle: const Text('定稿后不能改'),
@@ -482,8 +406,8 @@ class _SettingsPageState extends State<SettingsPage> {
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.person_remove_outlined,
                 color: theme.colorScheme.error),
-            title: Text('删除重建',
-                style: TextStyle(color: theme.colorScheme.error)),
+            title:
+                Text('删除重建', style: TextStyle(color: theme.colorScheme.error)),
             subtitle: const Text('人设、聊天、摘要、行为手册一起清空，配置保留'),
             onTap: () => _confirm(
               '删除这个人，重新定？',
