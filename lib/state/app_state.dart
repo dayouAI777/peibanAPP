@@ -136,16 +136,19 @@ class AppState extends ChangeNotifier {
         speech: speech,
       );
 
-  Future<void> send(String text) async {
+  Future<void> send(String text, {String? imagePath}) async {
     final c = companion;
     final content = text.trim();
-    if (c == null || content.isEmpty || busy) return;
+    final img = imagePath ?? '';
+    if (c == null || busy) return;
+    if (content.isEmpty && img.isEmpty) return;
 
     final userMsg = ChatMessage(
       companionId: c.id!,
       role: 'user',
       content: content,
       createdAt: DateTime.now().millisecondsSinceEpoch,
+      imagePath: img,
     );
     await DbHelper.instance.insertMessage(userMsg);
     messages.add(userMsg);
@@ -158,7 +161,7 @@ class AppState extends ChangeNotifier {
       final answer = await _llm.reply(
         apiKey: await Prefs.apiKey(),
         system: await _systemPrompt(c),
-        history: ContextBuilder.buildTurns(messages),
+        history: await ContextBuilder.buildTurns(messages),
         temperature: await Prefs.temperature(),
       );
       final botMsg = ChatMessage(
@@ -242,7 +245,7 @@ class AppState extends ChangeNotifier {
       final line = await _llm.proactiveLine(
         apiKey: key,
         system: await _systemPrompt(c),
-        history: ContextBuilder.buildTurns(messages),
+        history: await ContextBuilder.buildTurns(messages),
       );
       final m = ChatMessage(
         companionId: c.id!,

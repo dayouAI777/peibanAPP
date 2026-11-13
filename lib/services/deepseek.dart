@@ -19,7 +19,7 @@ class DeepSeekService {
   Future<String> _complete({
     required String apiKey,
     required String system,
-    required List<Map<String, String>> messages,
+    required List<Map<String, dynamic>> messages,
     double temperature = 1.25,
     int maxTokens = 500,
     Duration timeout = const Duration(seconds: 45),
@@ -118,10 +118,11 @@ class DeepSeekService {
   }
 
   /// 普通聊天。system 是拼好的完整指令（人设 + 行为手册 + 旧事摘要）。
+  /// history 里 content 可以是纯文本，也可以是多模态数组（文字 + 图片）。
   Future<String> reply({
     required String apiKey,
     required String system,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
     required double temperature,
   }) async {
     return _complete(
@@ -137,7 +138,7 @@ class DeepSeekService {
   Future<String> proactiveLine({
     required String apiKey,
     required String system,
-    required List<Map<String, String>> history,
+    required List<Map<String, dynamic>> history,
   }) async {
     const extra = '''
 【此刻的特殊要求】
@@ -146,7 +147,7 @@ class DeepSeekService {
 1~2 句，短，有温度，别客套，别解释自己为什么突然发消息，不要括号动作。
 句末自然带 1 个小表情，贴合这句话的语气，别堆。
 ''';
-    final turns = <Map<String, String>>[
+    final turns = <Map<String, dynamic>>[
       ...history,
       {
         'role': 'user',

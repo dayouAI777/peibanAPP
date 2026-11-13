@@ -3,6 +3,7 @@ import '../models/memory_chunk.dart';
 import '../models/message.dart';
 import '../models/speech_profile.dart';
 import '../models/user_note.dart';
+import 'chat_images.dart';
 
 /// 把「人设 + 行为手册 + 旧事摘要 + 说话风格 + 最近原文」拼成一次请求。
 ///
@@ -23,6 +24,9 @@ class ContextBuilder {
 
   /// 旧事摘要累计字符上限，防止越聊越稀释人设。
   static const int maxSummaryChars = 3000;
+
+  /// 最近多少张图片随请求发原图（每张图要花不少 token，更早的只留文字标记）。
+  static const int maxImageAttachments = 4;
 
   static String buildSystem({
     required String persona,
@@ -68,6 +72,10 @@ class ContextBuilder {
       b.writeln('回复时自然贴近对方的句长和节奏，但永远保持你自己的人设。');
     }
 
+    b.writeln('\n\n【看图】对方可能会给你发照片。看到图片就自然地聊它：'
+        '说说你看到了什么、你的感受或好奇的地方，像朋友收到照片一样；'
+        '看不清的地方可以问，不要硬编图片里没有的细节。');
+
     b.writeln('\n\n【记忆范围】你记得最近约 $window 句对话，更早的事在上面摘要里。'
         '不要声称记得摘要和最近对话里都没出现的细节。');
 
@@ -85,28 +93,59 @@ class ContextBuilder {
 
   /// 从窗口里取最近若干条原文，按字符预算从新往旧截，保持时间正序。
   /// 截断后若开头是 assistant，去掉——避免模型从「接自己的话」开始。
-  static List<Map<String, String>> buildTurns(
+  ///
+  /// 带图片的消息：最近 maxImageAttachments 张随请求发原图（多模态数组），
+  /// 更早的图片消息在文字里留个 [图片] 标记。图片读不出来就当纯文字处理。
+  static Future<List<Map<String, dynamic>>> buildTurns(
     List<ChatMessage> windowMessages, {
     int maxTurns = maxRawTurns,
     int maxChars = maxRawChars,
-  }) {
+  }) async {
     final picked = <ChatMessage>[];
     var chars = 0;
     for (int i = windowMessages.length - 1; i >= 0; i--) {
       final m = windowMessages[i];
-      if (m.content.trim().isEmpty) continue;
       final len = m.content.length;
       if (picked.length >= maxTurns) break;
       if (chars + len > maxChars && picked.isNotEmpty) break;
       picked.add(m);
       chars += len;
     }
-    final turns = picked.reversed
-        .map((m) => <String, String>{
-              'role': m.fromUser ? 'user' : 'assistant',
-              'content': m.content,
-            })
-        .toList();
+
+    // 只有最近几张图才真发原图
+    var imageQuota = maxImageAttachments;
+
+    final turns = <Map<String, dynamic>>[];
+    for (final m in picked.reversed) {
+      if (m.hasImage && imageQuota > 0) {
+        imageQuota--;
+        final url = await ChatImages.instance.dataUrl(m.imagePath);
+        if (url != null) {
+          final caption = m.content.trim();
+          turns.add({
+            'role': m.fromUser ? 'user' : 'assistant',
+            'content': [
+              {
+                'type': 'text',
+                'text': caption.isEmpty ? '（发了一张图片，你看看）' : caption,
+              },
+              {'type': 'image_url', 'image_url': {'url': url}},
+            ],
+          });
+          continue;
+        }
+        // 图丢了就降级成文字
+      }
+
+      var text = m.content.trim();
+      if (m.hasImage) text = '[图片] $text'.trim();
+      if (text.isEmpty) continue;
+      turns.add({
+        'role': m.fromUser ? 'user' : 'assistant',
+        'content': text,
+      });
+    }
+
     while (turns.isNotEmpty && turns.first['role'] == 'assistant') {
       turns.removeAt(0);
     }

@@ -8,6 +8,7 @@ import '../models/user_note.dart';
 
 /// 本地数据库。所有数据都在这台手机的 App 沙盒里，不上传任何服务器。
 /// v2：新增人设空间、用户行为手册、旧对话压缩摘要三张/列。
+/// v3：messages 加 image_path 列（用户发图片，模型看图）。
 class DbHelper {
   DbHelper._();
   static final DbHelper instance = DbHelper._();
@@ -19,7 +20,7 @@ class DbHelper {
     final dir = await getDatabasesPath();
     _db = await openDatabase(
       p.join(dir, 'peiban.db'),
-      version: 2,
+      version: 3,
       onCreate: (d, _) async => _createAll(d),
       onUpgrade: (d, oldV, _) async {
         if (oldV < 2) {
@@ -28,6 +29,10 @@ class DbHelper {
               "ALTER TABLE companions ADD COLUMN persona_space TEXT NOT NULL DEFAULT ''");
           await _createNotes(d);
           await _createChunks(d);
+        }
+        if (oldV < 3) {
+          await d.execute(
+              "ALTER TABLE messages ADD COLUMN image_path TEXT NOT NULL DEFAULT ''");
         }
       },
     );
@@ -53,7 +58,8 @@ class DbHelper {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         created_at INTEGER NOT NULL,
-        is_proactive INTEGER NOT NULL DEFAULT 0
+        is_proactive INTEGER NOT NULL DEFAULT 0,
+        image_path TEXT NOT NULL DEFAULT ''
       )
     ''');
     await d.execute(

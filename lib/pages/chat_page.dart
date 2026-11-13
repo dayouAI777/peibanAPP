@@ -1,10 +1,12 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../models/companion.dart';
 import '../models/message.dart';
+import '../services/chat_images.dart';
 import '../state/app_state.dart';
 import '../widgets/emoji_picker.dart';
 
@@ -28,6 +30,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final _focus = FocusNode();
   bool _proactiveDone = false;
   bool _showEmoji = false;
+  String? _pickedImage; // 待发送的图片（已拷进沙盒）
 
   @override
   void initState() {
@@ -93,13 +96,67 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _input.selection = TextSelection.collapsed(offset: pos + emoji.length);
   }
 
-  void _send(AppState s) {
+  Future<void> _pickImage(ImageSource source) async {
+    try {
+      final x = await ImagePicker().pickImage(
+        source: source,
+        maxWidth: 1280,
+        imageQuality: 72,
+      );
+      if (x == null) return;
+      final path = await ChatImages.instance.persist(x.path);
+      setState(() {
+        _pickedImage = path;
+        _showEmoji = false;
+      });
+      _keepAtBottom();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('图片拿不到，再试一次')),
+        );
+      }
+    }
+  }
+
+  Future<void> _send(AppState s) async {
     final text = _input.text;
-    if (text.trim().isEmpty || s.busy) return;
+    final img = _pickedImage;
+    if ((text.trim().isEmpty && (img == null || img.isEmpty)) || s.busy) return;
     _input.clear();
-    setState(() => _showEmoji = false);
-    s.send(text);
+    setState(() => _pickedImage = null);
+    await s.send(text, imagePath: img);
     _keepAtBottom();
+  }
+
+  /// 点气泡里的图，全屏放大看。
+  void _viewImage(BuildContext context, String path) {
+    showDialog(
+      context: context,
+      barrierColor: Colors.black87,
+      builder: (_) => Dialog.fullscreen(
+        backgroundColor: Colors.black,
+        child: Stack(
+          children: [
+            Center(
+              child: InteractiveViewer(
+                maxScale: 4,
+                child: Image.file(File(path), fit: BoxFit.contain),
+              ),
+            ),
+            SafeArea(
+              child: Align(
+                alignment: Alignment.topRight,
+                child: IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () => Navigator.of(context).pop(),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _bubble(ChatMessage m, Companion c, ThemeData theme) {
@@ -117,8 +174,37 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               style: const TextStyle(fontSize: 12)),
     );
 
-    final bubble = Flexible(
-      child: Container(
+    final imageWidget = m.hasImage && File(m.imagePath).existsSync()
+        ? Padding(
+            padding: EdgeInsets.only(
+                bottom: m.content.trim().isEmpty ? 0 : 8),
+            child: GestureDetector(
+              onTap: () => _viewImage(context, m.imagePath),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 220, maxHeight: 260),
+                  child: Image.file(File(m.imagePath), fit: BoxFit.cover),
+                ),
+              ),
+            ),
+          )
+        : null;
+
+    Widget contentWidget;
+    if (imageWidget != null && m.content.trim().isEmpty) {
+      // 纯图片：不要文字气泡底色，直接给图
+      contentWidget = Container(
+        padding: const EdgeInsets.all(3),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.grey.shade200),
+        ),
+        child: imageWidget,
+      );
+    } else {
+      contentWidget = Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
         decoration: BoxDecoration(
           color: mine ? theme.colorScheme.primary : Colors.white,
@@ -130,16 +216,26 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           ),
           border: mine ? null : Border.all(color: Colors.grey.shade200),
         ),
-        child: Text(
-          m.content,
-          style: TextStyle(
-            color: mine ? Colors.white : Colors.black87,
-            height: 1.6,
-            fontSize: 15,
-          ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (imageWidget != null) imageWidget,
+            if (m.content.trim().isNotEmpty)
+              Text(
+                m.content,
+                style: TextStyle(
+                  color: mine ? Colors.white : Colors.black87,
+                  height: 1.6,
+                  fontSize: 15,
+                ),
+              ),
+          ],
         ),
-      ),
-    );
+      );
+    }
+
+    final bubble = Flexible(child: contentWidget);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
@@ -280,6 +376,34 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   ),
                 ),
               ),
+            if (_pickedImage != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.file(
+                        File(_pickedImage!),
+                        width: 56,
+                        height: 56,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text('图片已就绪，加点字或直接发送',
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.grey.shade600)),
+                    ),
+                    IconButton(
+                      tooltip: '移除图片',
+                      icon: const Icon(Icons.close, size: 20),
+                      onPressed: () => setState(() => _pickedImage = null),
+                    ),
+                  ],
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
               child: Row(
@@ -294,6 +418,40 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       setState(() => _showEmoji = !_showEmoji);
                       _keepAtBottom();
                     },
+                  ),
+                  IconButton(
+                    tooltip: '发图片',
+                    icon: const Icon(Icons.add_photo_alternate_outlined),
+                    onPressed: s.busy
+                        ? null
+                        : () {
+                            showModalBottomSheet(
+                              context: context,
+                              builder: (_) => SafeArea(
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    ListTile(
+                                      leading: const Icon(Icons.photo_outlined),
+                                      title: const Text('从相册选'),
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        _pickImage(ImageSource.gallery);
+                                      },
+                                    ),
+                                    ListTile(
+                                      leading: const Icon(Icons.photo_camera_outlined),
+                                      title: const Text('拍一张'),
+                                      onTap: () {
+                                        Navigator.pop(context);
+                                        _pickImage(ImageSource.camera);
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
                   ),
                   Expanded(
                     child: TextField(
