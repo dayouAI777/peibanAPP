@@ -2,9 +2,6 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../models/setup_form.dart';
-import 'persona_builder.dart';
-
 /// 调用出错时抛这个，界面直接把 message 显示给用户，不堆术语。
 class DeepSeekException implements Exception {
   final String message;
@@ -14,8 +11,7 @@ class DeepSeekException implements Exception {
   String toString() => message;
 }
 
-/// DeepSeek 网络层。只做三件事：润色人设、普通聊天、生成主动消息。
-/// 用的是 OpenAI 兼容格式，以后想换别家模型，改 endpoint / model 两行即可。
+/// DeepSeek 网络层（OpenAI 兼容格式）。换模型只改 endpoint / model 两行。
 class DeepSeekService {
   static const String endpoint = 'https://api.deepseek.com/chat/completions';
   static const String model = 'deepseek-chat';
@@ -25,11 +21,12 @@ class DeepSeekService {
     required String system,
     required List<Map<String, String>> messages,
     double temperature = 1.25,
-    int maxTokens = 400,
+    int maxTokens = 500,
+    Duration timeout = const Duration(seconds: 45),
   }) async {
     final key = apiKey.trim();
     if (key.isEmpty) {
-      throw DeepSeekException('还没填 API Key，去「设置」里填一个就能聊了');
+      throw DeepSeekException('还没填 API Key，先去配置页填一个');
     }
 
     final body = <String, dynamic>{
@@ -54,9 +51,9 @@ class DeepSeekService {
             },
             body: jsonEncode(body),
           )
-          .timeout(const Duration(seconds: 40));
+          .timeout(timeout);
     } catch (e) {
-      throw DeepSeekException('连不上 DeepSeek，先看看网络：$e');
+      throw DeepSeekException('连不上 DeepSeek，检查网络或 Key：$e');
     }
 
     // 用 bodyBytes 手动按 UTF-8 解，避免中文变乱码
@@ -67,44 +64,13 @@ class DeepSeekService {
     try {
       final decoded = jsonDecode(raw) as Map<String, dynamic>;
       final choices = decoded['choices'] as List<dynamic>;
-      final content = choices.first['message']['content'] as String;
-      return content.trim();
+      return (choices.first['message']['content'] as String).trim();
     } catch (e) {
       throw DeepSeekException('返回内容读不懂：${_short(raw)}');
     }
   }
 
-  String _short(String s) => s.length > 160 ? '${s.substring(0, 160)}…' : s;
-
-  /// 生成角色。没填 Key / 断网 / 返回格式不对 → 一律退回本地模板，
-  /// 这样「创建角色」这一步永远不会被卡住。
-  Future<GeneratedPersona> buildPersona({
-    required String apiKey,
-    required SetupForm form,
-  }) async {
-    if (apiKey.trim().isEmpty) return PersonaBuilder.localFallback(form);
-    try {
-      final raw = await _complete(
-        apiKey: apiKey,
-        system: PersonaBuilder.editorSystem(),
-        messages: [
-          {'role': 'user', 'content': form.toPlainText()},
-        ],
-        temperature: 1.1,
-        maxTokens: 900,
-      );
-      final cleaned = _stripFence(raw);
-      final m = jsonDecode(cleaned) as Map<String, dynamic>;
-      final persona = (m['persona'] as String?)?.trim() ?? '';
-      final greeting = (m['greeting'] as String?)?.trim() ?? '';
-      if (persona.length < 40 || greeting.isEmpty) {
-        return PersonaBuilder.localFallback(form);
-      }
-      return GeneratedPersona(persona: persona, greeting: greeting);
-    } catch (_) {
-      return PersonaBuilder.localFallback(form);
-    }
-  }
+  String _short(String s) => s.length > 180 ? '${s.substring(0, 180)}…' : s;
 
   String _stripFence(String s) {
     var t = s.trim();
@@ -116,26 +82,61 @@ class DeepSeekService {
     return t;
   }
 
-  /// 普通聊天。history 是最近若干条，按顺序 [{role, content}, ...]。
+  /// 配置页「测试链接」：真发一次最小请求，确认 Key 和链路都通。
+  Future<bool> testConnection(String apiKey) async {
+    await _complete(
+      apiKey: apiKey,
+      system: '你是连通性测试助手，无论用户说什么，只回复 ok，不要输出别的字。',
+      messages: [
+        {'role': 'user', 'content': 'ping'},
+      ],
+      temperature: 0,
+      maxTokens: 8,
+      timeout: const Duration(seconds: 20),
+    );
+    return true;
+  }
+
+  /// 让模型吐一个 JSON 对象（人设分析、行为抽取、摘要都走这里）。
+  Future<Map<String, dynamic>> completeJson({
+    required String apiKey,
+    required String system,
+    required String user,
+    int maxTokens = 1400,
+    double temperature = 0.5,
+  }) async {
+    final raw = await _complete(
+      apiKey: apiKey,
+      system: system,
+      messages: [
+        {'role': 'user', 'content': user},
+      ],
+      temperature: temperature,
+      maxTokens: maxTokens,
+    );
+    return jsonDecode(_stripFence(raw)) as Map<String, dynamic>;
+  }
+
+  /// 普通聊天。system 是拼好的完整指令（人设 + 行为手册 + 旧事摘要）。
   Future<String> reply({
     required String apiKey,
-    required String persona,
+    required String system,
     required List<Map<String, String>> history,
     required double temperature,
   }) async {
     return _complete(
       apiKey: apiKey,
-      system: persona,
+      system: system,
       messages: history,
       temperature: temperature,
-      maxTokens: 400,
+      maxTokens: 500,
     );
   }
 
-  /// 角色主动开口。不是等用户说完再回，所以额外加一段「此刻要求」。
+  /// 角色主动开口。
   Future<String> proactiveLine({
     required String apiKey,
-    required String persona,
+    required String system,
     required List<Map<String, String>> history,
   }) async {
     const extra = '''
@@ -153,10 +154,33 @@ class DeepSeekService {
     ];
     return _complete(
       apiKey: apiKey,
-      system: '$persona\n\n$extra',
+      system: '$system\n\n$extra',
       messages: turns,
       temperature: 1.35,
       maxTokens: 180,
+    );
+  }
+
+  /// 把一段旧对话压成摘要。
+  Future<String> summarize({
+    required String apiKey,
+    required String transcript,
+  }) async {
+    return _complete(
+      apiKey: apiKey,
+      system: '''
+你是「长期记忆整理员」。把下面这段旧对话压缩成一段客观记忆，供另一个 AI 以后回忆用。
+要求：
+- 只写真实发生过的事实：谁说了什么、提到的人名地名、约定、反复出现的习惯、明确的喜好与情绪走向。
+- 保留具体细节和原话关键词，不要笼统概括成「聊了一些日常」。
+- 不编造、不评价、不写建议、不写「本次对话」这类元信息。
+- 150 字以内，一段话，中文。
+''',
+      messages: [
+        {'role': 'user', 'content': transcript},
+      ],
+      temperature: 0.2,
+      maxTokens: 320,
     );
   }
 }

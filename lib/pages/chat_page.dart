@@ -6,8 +6,10 @@ import 'package:provider/provider.dart';
 import '../models/companion.dart';
 import '../models/message.dart';
 import '../state/app_state.dart';
+import '../widgets/emoji_picker.dart';
 
-/// 聊天页（主页面）。从通知点进来时会先自动生成一条「TA 主动找你」的消息。
+/// 聊天页。输入框旁有表情面板，点一下插入到光标处；
+/// AI 回复里的表情由 system prompt 里的表情规则控制。
 class ChatPage extends StatefulWidget {
   final bool autoProactive;
 
@@ -20,7 +22,9 @@ class ChatPage extends StatefulWidget {
 class _ChatPageState extends State<ChatPage> {
   final _input = TextEditingController();
   final _scroll = ScrollController();
+  final _focus = FocusNode();
   bool _proactiveDone = false;
+  bool _showEmoji = false;
 
   @override
   void initState() {
@@ -39,6 +43,7 @@ class _ChatPageState extends State<ChatPage> {
   void dispose() {
     _input.dispose();
     _scroll.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
@@ -51,10 +56,21 @@ class _ChatPageState extends State<ChatPage> {
     );
   }
 
+  void _insertEmoji(String emoji) {
+    final text = _input.text;
+    final sel = _input.selection;
+    final pos = (sel.isValid && sel.baseOffset >= 0 && sel.baseOffset <= text.length)
+        ? sel.baseOffset
+        : text.length;
+    _input.text = text.substring(0, pos) + emoji + text.substring(pos);
+    _input.selection = TextSelection.collapsed(offset: pos + emoji.length);
+  }
+
   void _send(AppState s) {
     final text = _input.text;
     if (text.trim().isEmpty || s.busy) return;
     _input.clear();
+    setState(() => _showEmoji = false);
     s.send(text);
   }
 
@@ -66,8 +82,7 @@ class _ChatPageState extends State<ChatPage> {
     final avatar = CircleAvatar(
       radius: 16,
       backgroundColor: theme.colorScheme.primaryContainer,
-      backgroundImage:
-          hasAvatar ? FileImage(File(c.avatarPath)) : null,
+      backgroundImage: hasAvatar ? FileImage(File(c.avatarPath)) : null,
       child: hasAvatar
           ? null
           : Text(c.name.isEmpty ? 'TA' : c.name.substring(0, 1),
@@ -78,9 +93,7 @@ class _ChatPageState extends State<ChatPage> {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
         decoration: BoxDecoration(
-          color: mine
-              ? theme.colorScheme.primary
-              : Colors.white,
+          color: mine ? theme.colorScheme.primary : Colors.white,
           borderRadius: BorderRadius.only(
             topLeft: const Radius.circular(16),
             topRight: const Radius.circular(16),
@@ -94,6 +107,7 @@ class _ChatPageState extends State<ChatPage> {
           style: TextStyle(
             color: mine ? Colors.white : Colors.black87,
             height: 1.6,
+            fontSize: 15,
           ),
         ),
       ),
@@ -136,8 +150,8 @@ class _ChatPageState extends State<ChatPage> {
         body: Center(
           child: FilledButton(
             onPressed: () => Navigator.of(context)
-                .pushNamedAndRemoveUntil('/', (route) => false),
-            child: const Text('还没有 TA，回去创建一个'),
+                .pushNamedAndRemoveUntil('/home', (route) => false),
+            child: const Text('还没有 TA，回去定一个'),
           ),
         ),
       );
@@ -239,12 +253,26 @@ class _ChatPageState extends State<ChatPage> {
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
               child: Row(
                 children: [
+                  IconButton(
+                    tooltip: '表情',
+                    icon: Icon(_showEmoji
+                        ? Icons.keyboard_outlined
+                        : Icons.sentiment_satisfied_alt_outlined),
+                    onPressed: () {
+                      FocusScope.of(context).unfocus();
+                      setState(() => _showEmoji = !_showEmoji);
+                    },
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _input,
+                      focusNode: _focus,
                       minLines: 1,
                       maxLines: 4,
                       textInputAction: TextInputAction.send,
+                      onTap: () {
+                        if (_showEmoji) setState(() => _showEmoji = false);
+                      },
                       onSubmitted: (_) => _send(s),
                       decoration: const InputDecoration(
                         hintText: '说点什么，或者只是打个招呼',
@@ -259,6 +287,8 @@ class _ChatPageState extends State<ChatPage> {
                 ],
               ),
             ),
+            if (_showEmoji)
+              EmojiPicker(onTap: _insertEmoji),
           ],
         ),
       ),

@@ -3,77 +3,127 @@ import 'package:flutter/foundation.dart';
 import '../data/db_helper.dart';
 import '../data/prefs.dart';
 import '../models/companion.dart';
+import '../models/memory_chunk.dart';
 import '../models/message.dart';
-import '../models/setup_form.dart';
+import '../models/persona_space.dart';
+import '../models/user_note.dart';
+import '../services/context_builder.dart';
 import '../services/deepseek.dart';
-import '../services/persona_builder.dart';
+import '../services/memory_service.dart';
+import '../services/persona_analyst.dart';
 import '../services/proactive_service.dart';
+import '../services/user_manual.dart';
 
-/// 全局状态：当前角色、聊天记录、加载中、报错。
-/// 页面只负责显示和点按钮，所有「脏活」都在这里。
+/// 全局状态。页面只管显示和点按钮，脏活都在这里。
 class AppState extends ChangeNotifier {
   final DeepSeekService _llm = DeepSeekService();
+  final PersonaAnalyst _analyst = PersonaAnalyst();
+  final MemoryService _memory = MemoryService();
+  final UserManualService _manual = UserManualService();
 
   Companion? companion;
   List<ChatMessage> messages = [];
+  List<UserNote> notes = [];
+  List<MemoryChunk> chunks = [];
   bool busy = false;
+  bool configured = false;
+  int contextWindow = ContextBuilder.defaultWindow;
   String? error;
 
+  int _userMessageCount = 0;
+  bool _maintaining = false;
+
   Future<void> load() async {
+    configured = await Prefs.configured();
+    contextWindow = await Prefs.contextLimit();
     companion = await DbHelper.instance.firstCompanion();
     messages = companion == null
         ? []
-        : await DbHelper.instance.messages(companion!.id!);
+        : await DbHelper.instance.messages(companion!.id!, limit: contextWindow);
+    chunks = companion == null
+        ? []
+        : await DbHelper.instance.memoryChunks(companion!.id!);
+    notes = await DbHelper.instance.userNotes();
     notifyListeners();
   }
 
-  /// 设定页点「生成 TA」→ 先出草稿，不落库。
-  Future<GeneratedPersona> generateDraft(SetupForm form) async {
-    return _llm.buildPersona(apiKey: await Prefs.apiKey(), form: form);
+  /// 旧版本（v1）创建的人设没有「人设空间」，按新规则必须删除重建。
+  bool get needsRebuild => companion != null && !companion!.hasPersonaSpace;
+
+  // ——— 配置门禁 ———
+
+  Future<void> testConnection(String key) async {
+    await _llm.testConnection(key);
   }
 
-  /// 结果页点「就开始聊天吧」→ 真正落库、发第一句、排主动消息。
-  Future<Companion> saveCompanion(
-      SetupForm form, GeneratedPersona draft) async {
-    await DbHelper.instance.deleteEverything();
-    final id = await DbHelper.instance.insertCompanion(
-      Companion(
-        name: form.name.trim().isEmpty ? 'TA' : form.name.trim(),
-        persona: draft.persona,
-        greeting: draft.greeting,
-        avatarPath: form.avatarPath,
-        createdAt: DateTime.now().millisecondsSinceEpoch,
-      ),
+  Future<void> markConfigured(String key) async {
+    await Prefs.setApiKey(key);
+    await Prefs.setConfigured(true);
+    configured = true;
+    notifyListeners();
+  }
+
+  // ——— 人设：唯一、定稿不可改 ———
+
+  Future<PersonaAnalysis> analyzePersona(
+      String rawInput, PersonaSpace current) async {
+    return _analyst.analyze(
+      apiKey: await Prefs.apiKey(),
+      rawInput: rawInput,
+      current: current,
     );
-    final c = (await DbHelper.instance.firstCompanion())!;
+  }
+
+  Future<Companion> finalizePersona(
+      PersonaSpace space, String avatarPath) async {
+    final finalized = await _analyst.finalize(
+      apiKey: await Prefs.apiKey(),
+      space: space,
+    );
+
+    final name = (finalized.fields['name'] ?? '').trim().isEmpty
+        ? 'TA'
+        : finalized.fields['name']!.trim();
+
+    await DbHelper.instance.deleteEverything();
+    final id = await DbHelper.instance.insertCompanion(Companion(
+      name: name,
+      persona: finalized.systemPrompt,
+      greeting: finalized.greeting,
+      avatarPath: avatarPath,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+      personaSpace: finalized.encode(),
+    ));
+
     final first = ChatMessage(
       companionId: id,
       role: 'assistant',
-      content: draft.greeting,
+      content: finalized.greeting,
       createdAt: DateTime.now().millisecondsSinceEpoch,
     );
     await DbHelper.instance.insertMessage(first);
 
-    companion = c;
+    companion = (await DbHelper.instance.firstCompanion())!;
     messages = [first];
+    chunks = [];
+    notes = [];
+    _userMessageCount = 0;
     error = null;
     notifyListeners();
 
-    await ProactiveService.reschedule(name: c.name);
-    return c;
+    await ProactiveService.reschedule(name: companion!.name);
+    return companion!;
   }
 
-  List<Map<String, String>> _recent(int limit) {
-    final start = messages.length > limit ? messages.length - limit : 0;
-    return messages
-        .sublist(start)
-        .where((m) => m.content.trim().isNotEmpty)
-        .map((m) => {
-              'role': m.fromUser ? 'user' : 'assistant',
-              'content': m.content,
-            })
-        .toList();
-  }
+  // ——— 聊天 ———
+
+  Future<String> _systemPrompt(Companion c) async => ContextBuilder.buildSystem(
+        persona: c.persona,
+        notes: notes,
+        chunks: chunks,
+        window: contextWindow,
+        emojiLevel: await Prefs.emojiLevel(),
+      );
 
   Future<void> send(String text) async {
     final c = companion;
@@ -88,6 +138,7 @@ class AppState extends ChangeNotifier {
     );
     await DbHelper.instance.insertMessage(userMsg);
     messages.add(userMsg);
+    _userMessageCount++;
     busy = true;
     error = null;
     notifyListeners();
@@ -95,8 +146,8 @@ class AppState extends ChangeNotifier {
     try {
       final answer = await _llm.reply(
         apiKey: await Prefs.apiKey(),
-        persona: c.persona,
-        history: _recent(20),
+        system: await _systemPrompt(c),
+        history: ContextBuilder.buildTurns(messages),
         temperature: await Prefs.temperature(),
       );
       final botMsg = ChatMessage(
@@ -113,10 +164,41 @@ class AppState extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+
+    // 压缩旧对话、评审行为手册，都在后台做，不挡回复
+    _backgroundMaintenance();
   }
 
-  /// 从通知点进来时调一次，生成一条「角色主动找你」的消息。
-  /// 失败就静默跳过——主动消息不该变成一次报错打扰。
+  Future<void> _backgroundMaintenance() async {
+    if (_maintaining || companion == null) return;
+    _maintaining = true;
+    try {
+      final key = await Prefs.apiKey();
+      if (key.trim().isEmpty) return;
+
+      await _memory.compressIfNeeded(
+          apiKey: key, companionId: companion!.id!);
+      chunks = await DbHelper.instance.memoryChunks(companion!.id!);
+
+      if (await Prefs.manualEnabled() &&
+          _userMessageCount % UserManualService.reviewEvery == 0) {
+        final start =
+            messages.length > 24 ? messages.length - 24 : 0;
+        final added = await _manual.review(
+          apiKey: key,
+          recent: messages.sublist(start),
+        );
+        if (added > 0) notes = await DbHelper.instance.userNotes();
+      }
+      notifyListeners();
+    } catch (_) {
+      // 后台维护失败不打扰用户
+    } finally {
+      _maintaining = false;
+    }
+  }
+
+  /// 从通知点进来时，现场生成一条「TA 主动找你」的消息。
   Future<void> generateProactiveMessage() async {
     final c = companion;
     if (c == null || busy) return;
@@ -128,8 +210,8 @@ class AppState extends ChangeNotifier {
     try {
       final line = await _llm.proactiveLine(
         apiKey: key,
-        persona: c.persona,
-        history: _recent(12),
+        system: await _systemPrompt(c),
+        history: ContextBuilder.buildTurns(messages),
       );
       final m = ChatMessage(
         companionId: c.id!,
@@ -148,10 +230,21 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  // ——— 设置 / 数据管理 ———
+
   Future<void> applySettings() async {
+    contextWindow = await Prefs.contextLimit();
     if (companion != null) {
+      messages = await DbHelper.instance
+          .messages(companion!.id!, limit: contextWindow);
       await ProactiveService.reschedule(name: companion!.name);
     }
+    notifyListeners();
+  }
+
+  Future<void> refreshNotes() async {
+    notes = await DbHelper.instance.userNotes();
+    notifyListeners();
   }
 
   Future<void> clearMessages() async {
@@ -159,15 +252,22 @@ class AppState extends ChangeNotifier {
     if (c == null) return;
     await DbHelper.instance.clearMessages(c.id!);
     messages = [];
+    chunks = [];
+    _userMessageCount = 0;
     error = null;
     notifyListeners();
   }
 
+  /// 删除角色 = 清空人设、聊天、摘要、行为手册，回到「重建人设」。
+  /// 配置（API Key / 测试结果）保留，不用重测。
   Future<void> deleteCompanion() async {
     await DbHelper.instance.deleteEverything();
     await ProactiveService.cancelAll();
     companion = null;
     messages = [];
+    chunks = [];
+    notes = [];
+    _userMessageCount = 0;
     error = null;
     notifyListeners();
   }

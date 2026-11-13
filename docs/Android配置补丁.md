@@ -2,6 +2,10 @@
 
 > 仓库里的 `android/` 目录**已经打好下面这两处补丁**，正常编译不用再动。
 > 只有在从零重建平台目录（重跑 `flutter create`）时才需要照做。
+>
+> 在线升级用的 `REQUEST_INSTALL_PACKAGES` 已一并声明。**FileProvider 不用自己加**：
+> `open_filex` 插件自带（`${applicationId}.fileProvider.com.crazecoder.openfile`），
+> 它的 `filepaths.xml` 已覆盖 `files-path` / `cache-path` / `root-path`，重复声明反而容易在 manifest merge 时打架。
 
 `flutter create` 生成平台目录后，只需要改 **两个文件**。不改的话：通知可能不弹、Gradle 可能编译失败。
 
@@ -16,6 +20,7 @@
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 <uses-permission android:name="android.permission.VIBRATE" />
+<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 ```
 
 完整位置示意：
@@ -27,6 +32,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.VIBRATE" />
+<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application ...>
         ...

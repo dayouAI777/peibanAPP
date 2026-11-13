@@ -2,9 +2,12 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
 import '../models/companion.dart';
+import '../models/memory_chunk.dart';
 import '../models/message.dart';
+import '../models/user_note.dart';
 
 /// 本地数据库。所有数据都在这台手机的 App 沙盒里，不上传任何服务器。
+/// v2：新增人设空间、用户行为手册、旧对话压缩摘要三张/列。
 class DbHelper {
   DbHelper._();
   static final DbHelper instance = DbHelper._();
@@ -16,37 +19,81 @@ class DbHelper {
     final dir = await getDatabasesPath();
     _db = await openDatabase(
       p.join(dir, 'peiban.db'),
-      version: 1,
-      onCreate: (d, _) async {
-        await d.execute('''
-          CREATE TABLE companions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            persona TEXT NOT NULL,
-            greeting TEXT NOT NULL,
-            avatar_path TEXT NOT NULL,
-            created_at INTEGER NOT NULL
-          )
-        ''');
-        await d.execute('''
-          CREATE TABLE messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            companion_id INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            is_proactive INTEGER NOT NULL DEFAULT 0
-          )
-        ''');
-        await d.execute(
-            'CREATE INDEX idx_messages_companion ON messages(companion_id, id)');
+      version: 2,
+      onCreate: (d, _) async => _createAll(d),
+      onUpgrade: (d, oldV, _) async {
+        if (oldV < 2) {
+          // 旧版角色保留聊天记录，但人设空间为空 → App 会提示需要重建
+          await d.execute(
+              "ALTER TABLE companions ADD COLUMN persona_space TEXT NOT NULL DEFAULT ''");
+          await _createNotes(d);
+          await _createChunks(d);
+        }
       },
     );
     return _db!;
   }
 
+  Future<void> _createAll(Database d) async {
+    await d.execute('''
+      CREATE TABLE companions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        persona TEXT NOT NULL,
+        greeting TEXT NOT NULL,
+        avatar_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        persona_space TEXT NOT NULL DEFAULT ''
+      )
+    ''');
+    await d.execute('''
+      CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        companion_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        is_proactive INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await d.execute(
+        'CREATE INDEX idx_messages_companion ON messages(companion_id, id)');
+    await _createNotes(d);
+    await _createChunks(d);
+  }
+
+  Future<void> _createNotes(Database d) async {
+    await d.execute('''
+      CREATE TABLE IF NOT EXISTS user_notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        content TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        evidence TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _createChunks(Database d) async {
+    await d.execute('''
+      CREATE TABLE IF NOT EXISTS memory_chunks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        companion_id INTEGER NOT NULL,
+        from_id INTEGER NOT NULL,
+        to_id INTEGER NOT NULL,
+        summary TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    ''');
+    await d.execute(
+        'CREATE INDEX IF NOT EXISTS idx_chunks ON memory_chunks(companion_id, from_id)');
+  }
+
+  // ——— 角色：唯一、定稿后不可改（所以这里故意没有 update 方法）———
   Future<Companion?> firstCompanion() async {
-    final rows = await (await db).query('companions', orderBy: 'id ASC', limit: 1);
+    final rows =
+        await (await db).query('companions', orderBy: 'id ASC', limit: 1);
     if (rows.isEmpty) return null;
     return Companion.fromMap(rows.first);
   }
@@ -56,13 +103,9 @@ class DbHelper {
     return (await db).insert('companions', m);
   }
 
-  Future<void> updateCompanion(Companion c) async {
-    await (await db).update('companions', c.toMap()..remove('id'),
-        where: 'id = ?', whereArgs: [c.id]);
-  }
-
-  /// 取某个角色的最近 n 条消息，按时间正序返回（方便直接喂给聊天界面）。
-  Future<List<ChatMessage>> messages(int companionId, {int limit = 200}) async {
+  // ——— 聊天记录 ———
+  Future<List<ChatMessage>> messages(int companionId,
+      {int limit = 1000}) async {
     final rows = await (await db).query(
       'messages',
       where: 'companion_id = ?',
@@ -73,18 +116,74 @@ class DbHelper {
     return rows.map(ChatMessage.fromMap).toList().reversed.toList();
   }
 
+  Future<int> messageCount(int companionId) async {
+    final r = await (await db).rawQuery(
+        'SELECT COUNT(*) AS c FROM messages WHERE companion_id = ?',
+        [companionId]);
+    return (r.first['c'] as int?) ?? 0;
+  }
+
+  /// 按消息 id 区间取，用于把一段旧对话压成摘要。
+  Future<List<ChatMessage>> messagesInRange(
+      int companionId, int fromId, int toId) async {
+    final rows = await (await db).query(
+      'messages',
+      where: 'companion_id = ? AND id >= ? AND id <= ?',
+      whereArgs: [companionId, fromId, toId],
+      orderBy: 'id ASC',
+    );
+    return rows.map(ChatMessage.fromMap).toList();
+  }
+
   Future<int> insertMessage(ChatMessage m) async {
     return (await db).insert('messages', m.toMap()..remove('id'));
   }
 
   Future<void> clearMessages(int companionId) async {
-    await (await db)
-        .delete('messages', where: 'companion_id = ?', whereArgs: [companionId]);
+    final d = await db;
+    await d.delete('messages',
+        where: 'companion_id = ?', whereArgs: [companionId]);
+    await d.delete('memory_chunks',
+        where: 'companion_id = ?', whereArgs: [companionId]);
+  }
+
+  // ——— 用户行为记录手册 ———
+  Future<List<UserNote>> userNotes() async {
+    final rows =
+        await (await db).query('user_notes', orderBy: 'created_at DESC');
+    return rows.map(UserNote.fromMap).toList();
+  }
+
+  Future<int> insertNote(UserNote n) async {
+    return (await db).insert('user_notes', n.toMap()..remove('id'));
+  }
+
+  Future<void> deleteNote(int id) async {
+    await (await db).delete('user_notes', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> clearNotes() async => (await db).delete('user_notes');
+
+  // ——— 压缩记忆 ———
+  Future<List<MemoryChunk>> memoryChunks(int companionId) async {
+    final rows = await (await db).query(
+      'memory_chunks',
+      where: 'companion_id = ?',
+      whereArgs: [companionId],
+      orderBy: 'from_id ASC',
+    );
+    return rows.map(MemoryChunk.fromMap).toList();
+  }
+
+  Future<int> insertChunk(MemoryChunk c) async {
+    return (await db).insert('memory_chunks', c.toMap()..remove('id'));
   }
 
   Future<void> deleteEverything() async {
     final d = await db;
     await d.delete('messages');
+    await d.delete('memory_chunks');
+    await d.delete('user_notes');
     await d.delete('companions');
   }
 }
