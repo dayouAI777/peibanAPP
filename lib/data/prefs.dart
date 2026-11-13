@@ -34,6 +34,14 @@ class Prefs {
   static const _kIgnoredBuild = 'ignored_build';
   static const _kLastUpdateCheck = 'last_update_check';
   static const _kEmojiLevel = 'emoji_level';
+  static const _kSpeechProfile = 'speech_profile';
+
+  /// 后台静默学习的说话方式画像（JSON），只存本机。
+  static Future<String> speechProfile() async =>
+      (await SharedPreferences.getInstance()).getString(_kSpeechProfile) ?? '';
+
+  static Future<void> setSpeechProfile(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kSpeechProfile, v);
 
   static Future<String> apiKey() async =>
       (await SharedPreferences.getInstance()).getString(_kApiKey) ?? '';
@@ -48,11 +56,18 @@ class Prefs {
   static Future<void> setConfigured(bool v) async =>
       (await SharedPreferences.getInstance()).setBool(_kConfigured, v);
 
-  static Future<double> temperature() async =>
-      (await SharedPreferences.getInstance()).getDouble(_kTemperature) ?? 1.25;
+  /// 随机度。上限锁在 1.0：实测 1.25 以上 deepseek-chat 容易输出语义崩坏的长段落。
+  /// 旧版存过 1.25 / 1.5 的，升级后在这里一并钳回来，不依赖用户手动改。
+  static Future<double> temperature() async {
+    final v = (await SharedPreferences.getInstance())
+            .getDouble(_kTemperature) ??
+        0.8;
+    return v.clamp(0.4, 1.0);
+  }
 
   static Future<void> setTemperature(double v) async =>
-      (await SharedPreferences.getInstance()).setDouble(_kTemperature, v);
+      (await SharedPreferences.getInstance())
+          .setDouble(_kTemperature, v.clamp(0.4, 1.0));
 
   /// 记忆窗口：最近多少句纳入上下文，默认 1000，超出的压缩成摘要。
   static Future<int> contextLimit() async =>

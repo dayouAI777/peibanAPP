@@ -24,7 +24,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _checking = false;
 
   late ProactiveSettings _s;
-  double _temperature = 1.25;
+  double _temperature = 0.8;
   int _emojiLevel = 2;
   int _contextWindow = 1000;
   bool _manualEnabled = true;
@@ -359,12 +359,24 @@ class _SettingsPageState extends State<SettingsPage> {
           Text('说话的随机度：${_temperature.toStringAsFixed(2)}',
               style: theme.textTheme.titleMedium),
           Slider(
-            value: _temperature,
-            min: 0.7,
-            max: 1.5,
-            divisions: 8,
+            value: _temperature.clamp(0.4, 1.0),
+            min: 0.4,
+            max: 1.0,
+            divisions: 6,
             label: _temperature.toStringAsFixed(2),
             onChanged: (v) => setState(() => _temperature = v),
+          ),
+          Text(
+            '默认 0.8，上限锁在 1.0——再高模型容易输出前言不搭后语的大段胡话。'
+            '旧版存过的高数值会自动降下来。',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            '对话风格会在后台自动学习（只学说话方式，不记聊天内容），只存本机，不用管它。',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
           ),
           const SizedBox(height: 20),
           FilledButton(

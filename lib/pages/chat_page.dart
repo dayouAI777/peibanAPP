@@ -10,6 +10,9 @@ import '../widgets/emoji_picker.dart';
 
 /// 聊天页。输入框旁有表情面板，点一下插入到光标处；
 /// AI 回复里的表情由 system prompt 里的表情规则控制。
+///
+/// 键盘弹出时 viewInsets 变化会让列表可视高度缩水，
+/// 这里用 WidgetsBindingObserver 监听尺寸变化，始终把列表贴回底部。
 class ChatPage extends StatefulWidget {
   final bool autoProactive;
 
@@ -19,7 +22,7 @@ class ChatPage extends StatefulWidget {
   State<ChatPage> createState() => _ChatPageState();
 }
 
-class _ChatPageState extends State<ChatPage> {
+class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final _input = TextEditingController();
   final _scroll = ScrollController();
   final _focus = FocusNode();
@@ -29,6 +32,7 @@ class _ChatPageState extends State<ChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (widget.autoProactive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_proactiveDone && mounted) {
@@ -41,19 +45,42 @@ class _ChatPageState extends State<ChatPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _input.dispose();
     _scroll.dispose();
     _focus.dispose();
     super.dispose();
   }
 
-  void _scrollToEnd() {
+  /// 键盘弹起 / 收起、表情面板展开都会触发尺寸变化。
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    _keepAtBottom();
+  }
+
+  /// 立刻贴底 + 键盘动画结束后补一次，防止动画途中被挤回去。
+  void _keepAtBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _scrollToEnd(instant: true);
+    });
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted) _scrollToEnd(instant: true);
+    });
+  }
+
+  void _scrollToEnd({bool instant = false}) {
     if (!_scroll.hasClients) return;
-    _scroll.animateTo(
-      _scroll.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-    );
+    final pos = _scroll.position;
+    if (instant) {
+      pos.jumpTo(pos.maxScrollExtent);
+    } else {
+      pos.animateTo(
+        pos.maxScrollExtent,
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOut,
+      );
+    }
   }
 
   void _insertEmoji(String emoji) {
@@ -72,6 +99,7 @@ class _ChatPageState extends State<ChatPage> {
     _input.clear();
     setState(() => _showEmoji = false);
     s.send(text);
+    _keepAtBottom();
   }
 
   Widget _bubble(ChatMessage m, Companion c, ThemeData theme) {
@@ -160,6 +188,7 @@ class _ChatPageState extends State<ChatPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToEnd());
 
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         titleSpacing: 0,
         title: Row(
@@ -231,6 +260,8 @@ class _ChatPageState extends State<ChatPage> {
                     )
                   : ListView.builder(
                       controller: _scroll,
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       itemCount: s.messages.length,
                       itemBuilder: (_, i) =>
@@ -261,6 +292,7 @@ class _ChatPageState extends State<ChatPage> {
                     onPressed: () {
                       FocusScope.of(context).unfocus();
                       setState(() => _showEmoji = !_showEmoji);
+                      _keepAtBottom();
                     },
                   ),
                   Expanded(
@@ -272,6 +304,7 @@ class _ChatPageState extends State<ChatPage> {
                       textInputAction: TextInputAction.send,
                       onTap: () {
                         if (_showEmoji) setState(() => _showEmoji = false);
+                        _keepAtBottom();
                       },
                       onSubmitted: (_) => _send(s),
                       decoration: const InputDecoration(

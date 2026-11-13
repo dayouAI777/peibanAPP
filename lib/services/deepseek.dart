@@ -129,7 +129,7 @@ class DeepSeekService {
       system: system,
       messages: history,
       temperature: temperature,
-      maxTokens: 500,
+      maxTokens: 220,
     );
   }
 

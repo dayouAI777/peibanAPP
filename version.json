@@ -1,11 +1,12 @@
 {
-  "version": "1.2.1",
-  "build": 4,
-  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.2.1/app-release.apk",
+  "version": "1.3.0",
+  "build": 5,
+  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.3.0/app-release.apk",
   "changelog": [
-    "修复：下载升级包偶发连不上 GitHub、要手动点第二次的问题",
-    "下载设 15 秒连接超时并自动重试 3 次，弹窗显示重试进度",
-    "报错改成中文说明，不再甩一长串英文异常"
+    "修复：弹出键盘时聊天内容自动跟随上滑，不再被输入法挡住",
+    "修复：回复偶发胡言乱语，说话更清楚连贯（回复稳定性整体调优）",
+    "新增：后台静默学习你的说话方式，聊得越久回复越贴近你的语气",
+    "说明：当前模型暂不支持识别图片内容，发图片暂时只能当普通消息"
   ],
   "published_at": "2026-11-13",
   "min_supported": "1.1.0",

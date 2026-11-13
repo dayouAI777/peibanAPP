@@ -6,12 +6,14 @@ import '../models/companion.dart';
 import '../models/memory_chunk.dart';
 import '../models/message.dart';
 import '../models/persona_space.dart';
+import '../models/speech_profile.dart';
 import '../models/user_note.dart';
 import '../services/context_builder.dart';
 import '../services/deepseek.dart';
 import '../services/memory_service.dart';
 import '../services/persona_analyst.dart';
 import '../services/proactive_service.dart';
+import '../services/speech_profile_service.dart';
 import '../services/user_manual.dart';
 
 /// 全局状态。页面只管显示和点按钮，脏活都在这里。
@@ -20,11 +22,13 @@ class AppState extends ChangeNotifier {
   final PersonaAnalyst _analyst = PersonaAnalyst();
   final MemoryService _memory = MemoryService();
   final UserManualService _manual = UserManualService();
+  final SpeechProfileService _speechService = SpeechProfileService();
 
   Companion? companion;
   List<ChatMessage> messages = [];
   List<UserNote> notes = [];
   List<MemoryChunk> chunks = [];
+  SpeechProfile speech = SpeechProfile.empty();
   bool busy = false;
   bool configured = false;
   int contextWindow = ContextBuilder.defaultWindow;
@@ -44,6 +48,12 @@ class AppState extends ChangeNotifier {
         ? []
         : await DbHelper.instance.memoryChunks(companion!.id!);
     notes = await DbHelper.instance.userNotes();
+    try {
+      final raw = await Prefs.speechProfile();
+      if (raw.isNotEmpty) speech = SpeechProfile.decode(raw);
+    } catch (_) {
+      speech = SpeechProfile.empty();
+    }
     notifyListeners();
   }
 
@@ -123,6 +133,7 @@ class AppState extends ChangeNotifier {
         chunks: chunks,
         window: contextWindow,
         emojiLevel: await Prefs.emojiLevel(),
+        speech: speech,
       );
 
   Future<void> send(String text) async {
@@ -189,6 +200,26 @@ class AppState extends ChangeNotifier {
           recent: messages.sublist(start),
         );
         if (added > 0) notes = await DbHelper.instance.userNotes();
+      }
+
+      // 说话方式：后台静默学习，不弹窗、不打扰、失败静默
+      if (_userMessageCount % SpeechProfileService.reviewEvery == 0) {
+        final start = messages.length > 24 ? messages.length - 24 : 0;
+        final userLines = messages
+            .sublist(start)
+            .where((m) => m.fromUser)
+            .map((m) => m.content.trim())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        final learned = await _speechService.review(
+          apiKey: key,
+          userLines: userLines,
+          current: speech,
+        );
+        if (learned.samples != speech.samples) {
+          speech = learned;
+          await Prefs.setSpeechProfile(learned.encode());
+        }
       }
       notifyListeners();
     } catch (_) {
