@@ -185,7 +185,7 @@
 
 发布流程见 [升级发布说明](docs/升级发布说明.md)。
 
-### 下载速度（V1.6.0）
+### 下载速度（V1.6.0 起）
 
 慢的原因有两个，都治了：
 
@@ -215,14 +215,15 @@
 以后不管换多少台机器，只要这个 jks 跟着仓库走，签名就不会变，升级能一直覆盖安装。
 **不要删它，也不要用别的 key 重新签**，否则又得卸载重装。
 
-**V1.6.0 这一版例外**：它用的是新机器的 key（旧 key 随旧电脑丢了），所以从旧版升级必须先卸载。
-卸载会清掉聊天记录、人设、行为手册，装好后重新填 API Key、重新定人设。
+**只有 V1.6.0 这一次例外**：它用的是新机器的 key（旧 key 随旧电脑丢了），所以从 1.5.x 及更早
+升级上来必须先卸载一次。卸载会清掉聊天记录、人设、行为手册，装好后重新填 API Key、重新定人设。
+**1.6.0 → 1.6.1 起签名已经固定**，之后所有版本都能直接覆盖安装。
 
 ### 发布命令
 
 ```bash
 flutter build apk --release --split-per-abi
-python C:/Users/Administrator/.peiban-tools/gh_release_upload.py v1.6.0 \
+python C:/Users/Administrator/.peiban-tools/gh_release_upload.py v1.6.1 \
   build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
   --asset-name app-arm64-v8a-release.apk
 ```

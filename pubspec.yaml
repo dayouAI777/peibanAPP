@@ -1,7 +1,7 @@
 name: peiban_app
 description: AI 虚拟陪伴 App（自用版，接入 DeepSeek）
 publish_to: 'none'
-version: 1.6.0+12
+version: 1.6.1+13
 
 environment:
   sdk: '>=3.3.0 <4.0.0'
