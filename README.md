@@ -8,30 +8,31 @@
 - **V1 目标平台**：Android（Dart 代码本身跨端，iOS 目录以后一条命令就能补）
 - **定位**：自用 / 小范围分享，**不商用**，不做上架、不做账号体系、不做内容审核后台
 
-> 本机开发环境没有安装 Flutter SDK，所以仓库里放的是**完整业务源码**，不含 `android/`、`ios/` 平台目录。
-> 第一次跑之前按 [docs/打包指南.md](docs/打包指南.md) 执行一条 `flutter create` 生成平台壳即可，两分钟的事。
+> 仓库**已含完整的 Android 平台工程**（`android/`，通知权限与 desugaring 补丁已打好），
+> clone 下来装好 Flutter 环境就能直接编译，不用再跑 `flutter create`。
+> 本机这套工具链装在 `C:\Users\Administrator\.peiban-tools\`，环境细节见 [打包指南](docs/打包指南.md)。
+
+**已验证的工具链**：Flutter 3.50.0 / Dart 3.14.0 · JDK 21 · Android SDK 36 · Gradle 9.5.0 · AGP 9.3.1。
 
 ---
 
 ## 快速开始
 
 ```bash
-# 1. 装好 Flutter SDK 和 Android Studio（见打包指南），然后：
 cd peibanAPP
-
-# 2. 生成 Android 平台目录（已有源码不会被删，但建议先 git status 看一眼）
-flutter create --platforms=android --project-name peiban_app --org com.dayouai.peiban .
-
-# 3. 按 docs/Android配置补丁.md 改 2 个文件（权限 + desugaring）
-# 4. 拉依赖
 flutter pub get
 
-# 5. 连上手机跑起来
+# 出安装包
+flutter build apk --release
+# → build/app/outputs/flutter-apk/app-release.apk
+
+# 或连真机边看边改（手机开 USB 调试）
 flutter run
 ```
 
-> ⚠️ `flutter create` 有时会覆盖 `lib/main.dart`。跑完执行 `git status`，
-> 如果 `lib/` 下有文件被改动，用 `git checkout -- lib/` 一键还原即可——源码都在仓库里。
+> 换一台新电脑时：按 [打包指南](docs/打包指南.md) 装 Flutter + Android SDK，
+> 然后改 `android/local.properties` 里的 `sdk.dir` / `flutter.sdk` 两个路径（该文件不进仓库）。
+> **不要重复跑 `flutter create`**，它可能覆盖 `lib/main.dart`；万一跑了，`git checkout -- lib/` 还原。
 
 ## 第一次使用
 
@@ -65,7 +66,11 @@ flutter run
 
 ```
 peibanAPP/
-├── pubspec.yaml                    依赖清单
+├── pubspec.yaml / pubspec.lock      依赖清单与锁版本
+├── android/                         【已生成、补丁已打好的 Android 工程】
+│   ├── app/src/main/AndroidManifest.xml   通知 / 网络权限
+│   └── app/build.gradle.kts               desugaring + 签名配置
+├── test/widget_test.dart            人设兜底逻辑的冒烟测试
 ├── lib/
 │   ├── main.dart                   入口、路由、通知冷启动判定
 │   ├── theme.dart                  配色
@@ -112,7 +117,7 @@ peibanAPP/
 
 - [需求规格说明书](docs/需求规格说明书.md) — 八大模块定稿版，含版本规划与页面原型
 - [打包指南](docs/打包指南.md) — 环境安装、APK 打包、签名、真机安装、报错排查、iOS 说明
-- [Android 配置补丁](docs/Android配置补丁.md) — `flutter create` 之后要改的两个文件
+- [Android 配置补丁](docs/Android配置补丁.md) — 已应用的补丁备查；只有从零重建平台目录时才需要照做
 
 ## 边界
 

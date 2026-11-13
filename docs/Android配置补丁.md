@@ -1,4 +1,7 @@
-# Android 配置补丁
+# Android 配置补丁（已应用，备查）
+
+> 仓库里的 `android/` 目录**已经打好下面这两处补丁**，正常编译不用再动。
+> 只有在从零重建平台目录（重跑 `flutter create`）时才需要照做。
 
 `flutter create` 生成平台目录后，只需要改 **两个文件**。不改的话：通知可能不弹、Gradle 可能编译失败。
 
@@ -69,7 +72,7 @@ android {
 
 ```kotlin
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
 ```
 
@@ -91,7 +94,7 @@ android {
 }
 
 dependencies {
-    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'   // ← 加这行
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'   // ← 加这行
 }
 ```
 

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 
 import '../data/prefs.dart';
@@ -32,7 +33,8 @@ class ProactiveService {
 
   static Future<void> init() async {
     if (_initialized) return;
-    tz.initializeTimeZones();
+    // timezone 0.10+ 把初始化函数放到了 data/latest.dart
+    tzdata.initializeTimeZones();
     // 国内自用；人在国外把这一行改成当地时区，例如 'America/Los_Angeles'
     tz.setLocalLocation(tz.getLocation('Asia/Shanghai'));
 
@@ -42,8 +44,9 @@ class ProactiveService {
       requestBadgePermission: false,
       requestSoundPermission: false,
     );
+    // 插件 20.0.0 起 initialize 的位置参数改成命名参数
     await plugin.initialize(
-      const InitializationSettings(android: android, iOS: ios),
+      settings: const InitializationSettings(android: android, iOS: ios),
     );
     _initialized = true;
   }
@@ -79,30 +82,26 @@ class ProactiveService {
       for (int i = 0; i < s.perDay; i++) {
         int minuteOfDay = 0;
         for (int guard = 0; guard < 24; guard++) {
-          minuteOfDay =
-              s.startHour * 60 + rnd.nextInt(s.spanHours * 60);
+          minuteOfDay = s.startHour * 60 + rnd.nextInt(s.spanHours * 60);
           if (!taken.contains(minuteOfDay)) break;
         }
         taken.add(minuteOfDay);
 
-        final when = tz.TZDateTime(
-          tz.local,
-          date.year,
-          date.month,
-          date.day,
-          0,
-          0,
-        ).add(Duration(minutes: minuteOfDay));
+        final when = tz
+            .TZDateTime(tz.local, date.year, date.month, date.day, 0, 0)
+            .add(Duration(minutes: minuteOfDay));
 
         // 已经过去的时间点直接跳过
         if (when.isBefore(nowLocal.add(const Duration(minutes: 2)))) continue;
 
+        // 插件 20.0.0 起全部改为命名参数；19.0.0 起移除了
+        // uiLocalNotificationDateInterpretation，不要再传。
         await plugin.zonedSchedule(
-          id++,
-          name,
-          lines[rnd.nextInt(lines.length)],
-          when,
-          const NotificationDetails(
+          id: id++,
+          title: name,
+          body: lines[rnd.nextInt(lines.length)],
+          scheduledDate: when,
+          notificationDetails: const NotificationDetails(
             android: AndroidNotificationDetails(
               'proactive',
               'TA 的消息',
@@ -119,8 +118,6 @@ class ProactiveService {
           ),
           payload: payload,
           androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-          uiLocalNotificationDateInterpretation:
-              UILocalNotificationDateInterpretation.absoluteTime,
         );
       }
     }
