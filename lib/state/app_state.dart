@@ -374,8 +374,9 @@ class AppState extends ChangeNotifier {
 
   Future<void> setChatBackground(ChatBackground b) async {
     chatBg = b;
-    await Prefs.setChatBackground(b);
+    // 先刷新界面再落盘：滑杆拖动时体感是跟手的，不等磁盘写完
     notifyListeners();
+    await Prefs.setChatBackground(b);
   }
 
   /// 只改外观：头像 + 昵称。性格字段绝不触碰。

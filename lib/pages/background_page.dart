@@ -77,7 +77,7 @@ class _BackgroundPageState extends State<BackgroundPage> {
     return ClipRRect(
       borderRadius: BorderRadius.circular(16),
       child: SizedBox(
-        height: 152,
+        height: 176,
         child: Stack(
           children: [
             Positioned.fill(child: ChatBackgroundView(bg: bg)),
@@ -183,37 +183,36 @@ class _BackgroundPageState extends State<BackgroundPage> {
           const SizedBox(height: 20),
           Text('预设', style: theme.textTheme.titleMedium),
           const SizedBox(height: 10),
-          SizedBox(
-            height: 190,
-            child: GridView.count(
-              crossAxisCount: 3,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 0.92,
-              children: [
+          // shrinkWrap + 禁用滚动：让网格自己算高度（7 个格子是 3 行，
+          // 写死高度会把最后一行裁掉）
+          GridView.count(
+            crossAxisCount: 3,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 12,
+            crossAxisSpacing: 12,
+            childAspectRatio: 0.92,
+            children: [
+              _tile(
+                id: 'none',
+                label: '默认',
+                colors: const [],
+                plain: true,
+                selected: bg.type == 'none',
+                onTap: () => _apply(ChatBackground.initial),
+              ),
+              for (final p in ChatPresets.all)
                 _tile(
-                  id: 'none',
-                  label: '默认',
-                  colors: const [],
-                  plain: true,
-                  selected: bg.type == 'none',
-                  onTap: () => _apply(ChatBackground.initial),
+                  id: p.id,
+                  label: p.label,
+                  colors: p.colors,
+                  selected: bg.isPreset && bg.presetId == p.id,
+                  onTap: () => _apply(ChatBackground(
+                    type: 'preset',
+                    presetId: p.id,
+                  )),
                 ),
-                for (final p in ChatPresets.all)
-                  _tile(
-                    id: p.id,
-                    label: p.label,
-                    colors: p.colors,
-                    selected: bg.isPreset && bg.presetId == p.id,
-                    onTap: () => _apply(ChatBackground(
-                      type: 'preset',
-                      presetId: p.id,
-                    )),
-                  ),
-              ],
-            ),
+            ],
           ),
           const Divider(height: 32),
           Text('用自己的图', style: theme.textTheme.titleMedium),
