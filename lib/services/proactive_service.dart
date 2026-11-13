@@ -19,17 +19,19 @@ class ProactiveService {
   static const String payload = 'proactive';
   static bool _initialized = false;
 
-  /// 通知上那句引子，自用版写得有温度一点，不用客服腔。
-  static const List<String> lines = [
-    '在吗，刚想到你',
-    '有点想跟你说说话',
-    '忙完了吗？',
-    '刚走神了一下，想起你',
-    '今天过得怎么样呀',
-    '有空的话，陪我聊两句',
-    '睡了吗',
-    '忽然有点惦记你',
-  ];
+  /// 通知上那句引子。必须跟着时间走——上午十点发「睡了吗」会把人问懵。
+  static List<String> linesFor(DateTime at) {
+    final h = at.hour;
+    if (h >= 23 || h < 6) {
+      return ['还没睡？', '睡不着，忽然想起你', '你也没睡啊'];
+    }
+    if (h < 9) return ['早', '醒了吗', '今天起得比闹钟早'];
+    if (h < 12) return ['在忙吗', '上午好难熬', '摸鱼中，跟你说句话'];
+    if (h < 14) return ['吃了吗', '在吃饭吗'];
+    if (h < 18) return ['下午好困', '在干嘛呢', '有点想跟你说说话'];
+    if (h < 20) return ['下班了吗', '吃了吗', '刚到家的样子'];
+    return ['在吗，刚想到你', '今天过得怎么样呀', '忙完了吗？', '忽然有点惦记你'];
+  }
 
   static Future<void> init() async {
     if (_initialized) return;
@@ -96,10 +98,11 @@ class ProactiveService {
 
         // 插件 20.0.0 起全部改为命名参数；19.0.0 起移除了
         // uiLocalNotificationDateInterpretation，不要再传。
+        final pool = linesFor(when);
         await plugin.zonedSchedule(
           id: id++,
           title: name,
-          body: lines[rnd.nextInt(lines.length)],
+          body: pool[rnd.nextInt(pool.length)],
           scheduledDate: when,
           notificationDetails: const NotificationDetails(
             android: AndroidNotificationDetails(

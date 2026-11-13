@@ -3,10 +3,10 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import '../data/prefs.dart';
 import '../models/persona_space.dart';
 import '../services/update_service.dart';
 import '../state/app_state.dart';
+import '../widgets/silent_update_banner.dart';
 import '../widgets/update_helper.dart';
 
 /// 启动落地页：人设卡（只读）。强调「这个人已经定了」。
@@ -23,14 +23,8 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    _checkUpdate();
-  }
-
-  Future<void> _checkUpdate() async {
-    if (!await Prefs.autoUpdateCheck()) return;
-    final r = await UpdateService().check();
-    if (!mounted) return;
-    setState(() => _update = r);
+    // 启动检查交给 SilentUpdater 在后台做：
+    // 它只会在「包已经下好」时冒出来一条提示，查版本/下载过程都不打扰。
   }
 
   Future<void> _confirmRebuild() async {
@@ -102,6 +96,8 @@ class _HomePageState extends State<HomePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 后台静默升级：只有「已经下好」才会显示，其余状态不打扰
+              const SilentUpdateBanner(),
               if (_update?.hasUpdate == true) ...[
                 Card(
                   color: theme.colorScheme.secondaryContainer,
@@ -113,8 +109,8 @@ class _HomePageState extends State<HomePage> {
                     onTap: () => Navigator.pushNamed(context, '/settings'),
                   ),
                 ),
-                const SizedBox(height: 14),
               ],
+              const SizedBox(height: 14),
               if (s.needsRebuild) ...[
                 Container(
                   padding: const EdgeInsets.all(14),

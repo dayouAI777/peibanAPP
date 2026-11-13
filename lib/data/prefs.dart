@@ -39,6 +39,95 @@ class Prefs {
   static const _kSpeechProfile = 'speech_profile';
   static const _kChatBackground = 'chat_background';
 
+  // v1.6 新增：升级链路
+  static const _kCachedVersionJson = 'cached_version_json';
+  static const _kCachedVersionAt = 'cached_version_at';
+  static const _kSilentUpdateEnabled = 'silent_update_enabled';
+  static const _kSilentUpdateAt = 'silent_update_at';
+  static const _kPendingApk = 'pending_apk';
+
+  // v1.6 新增：她的时间感与情绪
+  static const _kLifeEvent = 'life_event';
+  static const _kLifePlanDay = 'life_plan_day';
+  static const _kLastTripAt = 'last_trip_at';
+  static const _kMood = 'mood_state';
+  static const _kMoodEnabled = 'mood_enabled';
+
+  /// 最近一次成功拉到的 version.json 原文（秒开用）。
+  static Future<String> cachedVersionJson() async =>
+      (await SharedPreferences.getInstance()).getString(_kCachedVersionJson) ??
+      '';
+
+  static Future<void> cacheVersionJson(String v) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(_kCachedVersionJson, v);
+    await sp.setInt(_kCachedVersionAt, DateTime.now().millisecondsSinceEpoch);
+  }
+
+  static Future<int> cachedVersionAt() async =>
+      (await SharedPreferences.getInstance()).getInt(_kCachedVersionAt) ?? 0;
+
+  /// 后台静默升级：默认开启（启动后自己下好，不打扰）。
+  static Future<bool> silentUpdateEnabled() async =>
+      (await SharedPreferences.getInstance())
+          .getBool(_kSilentUpdateEnabled) ??
+      true;
+
+  static Future<void> setSilentUpdateEnabled(bool v) async =>
+      (await SharedPreferences.getInstance())
+          .setBool(_kSilentUpdateEnabled, v);
+
+  /// 上次尝试静默升级的时间，用来做失败退避，避免每次都白跑一次。
+  static Future<int> silentUpdateAt() async =>
+      (await SharedPreferences.getInstance()).getInt(_kSilentUpdateAt) ?? 0;
+
+  static Future<void> setSilentUpdateAt(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kSilentUpdateAt, v);
+
+  /// 已经下好、等着安装的包：{"path":..,"build":..,"version":..,"at":..}
+  static Future<String> pendingApk() async =>
+      (await SharedPreferences.getInstance()).getString(_kPendingApk) ?? '';
+
+  static Future<void> setPendingApk(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kPendingApk, v);
+
+  // ——— 她的时间感 ———
+
+  /// 当前这段临时安排（出差/加班/旅行…）的 JSON，过期就没意义了。
+  static Future<String> lifeEvent() async =>
+      (await SharedPreferences.getInstance()).getString(_kLifeEvent) ?? '';
+
+  static Future<void> setLifeEvent(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kLifeEvent, v);
+
+  /// 已经为哪一天排过安排（yyyyMMdd），同一天不重复抽签。
+  static Future<String> lifePlanDay() async =>
+      (await SharedPreferences.getInstance()).getString(_kLifePlanDay) ?? '';
+
+  static Future<void> setLifePlanDay(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kLifePlanDay, v);
+
+  /// 上次出门旅行的时间，控制频率（太频繁就不像过日子了）。
+  static Future<int> lastTripAt() async =>
+      (await SharedPreferences.getInstance()).getInt(_kLastTripAt) ?? 0;
+
+  static Future<void> setLastTripAt(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kLastTripAt, v);
+
+  // ——— 她的情绪 ———
+
+  static Future<String> mood() async =>
+      (await SharedPreferences.getInstance()).getString(_kMood) ?? '';
+
+  static Future<void> setMood(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kMood, v);
+
+  static Future<bool> moodEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_kMoodEnabled) ?? true;
+
+  static Future<void> setMoodEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_kMoodEnabled, v);
+
   /// 聊天背景（JSON）。存不了或读坏了都退回默认，绝不让聊天页白屏。
   static Future<ChatBackground> chatBackground() async {
     final raw =

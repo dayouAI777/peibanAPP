@@ -25,6 +25,19 @@ class ChatMessage {
   bool get isProactiveMessage => isProactive == 1;
   bool get hasImage => imagePath.isNotEmpty;
 
+  /// 只有表情、没有字：生气时她只甩一个 😤，这种消息在界面上要放大显示，
+  /// 不能塞进一个小气泡里像条文字。
+  static final RegExp _emojiOnly = RegExp(
+    r'^[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}\u{2764}\u{2049}\u{203C}]+$',
+    unicode: true,
+  );
+
+  bool get isSticker {
+    final t = content.trim();
+    if (t.isEmpty || t.runes.length > 3) return false;
+    return _emojiOnly.hasMatch(t);
+  }
+
   Map<String, dynamic> toMap() => {
         'id': id,
         'companion_id': companionId,

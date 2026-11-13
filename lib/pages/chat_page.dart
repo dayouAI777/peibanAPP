@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -18,6 +19,10 @@ import '../widgets/emoji_picker.dart';
 ///
 /// 长按她的消息 →「改她这句怎么说」：用户写一遍对的，存进她的说话风格。
 ///
+/// 页面里有个每 20 秒走一次的钟：标题下面那行会跟着变成她现在的生活状态
+/// （在上班 / 刚下班 / 在吃饭 / 生气中），消息之间也会插时间分隔，
+/// 这样每次打开都像「正在发生」，而不是接着上次的聊天记录。
+///
 /// 键盘弹出时 viewInsets 变化会让列表可视高度缩水，
 /// 这里用 WidgetsBindingObserver 监听尺寸变化，始终把列表贴回底部。
 class ChatPage extends StatefulWidget {
@@ -37,10 +42,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool _showEmoji = false;
   String? _pickedImage; // 待发送的图片（已拷进沙盒）
 
+  /// 页面自己的“现在”。20 秒跳一次，足够让状态和时间跟上现实。
+  DateTime _now = DateTime.now();
+  Timer? _ticker;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _ticker = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (!mounted) return;
+      setState(() => _now = DateTime.now());
+    });
     if (widget.autoProactive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!_proactiveDone && mounted) {
@@ -53,6 +66,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _ticker?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _input.dispose();
     _scroll.dispose();
@@ -90,6 +104,50 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       );
     }
   }
+
+  static String _hhmm(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+
+  String _dayLabel(DateTime t) {
+    final today = DateTime(_now.year, _now.month, _now.day);
+    final day = DateTime(t.year, t.month, t.day);
+    final diff = today.difference(day).inDays;
+    if (diff == 0) return '今天';
+    if (diff == 1) return '昨天';
+    if (t.year == _now.year) return '${t.month}月${t.day}日';
+    return '${t.year}年${t.month}月${t.day}日';
+  }
+
+  /// 两条消息中间要不要插时间条。规则跟微信一样：超过 5 分钟就标一次。
+  /// 这是让人一眼看出「隔了多久」的最直接办法。
+  String? _dividerText(ChatMessage m, ChatMessage? prev) {
+    final t = DateTime.fromMillisecondsSinceEpoch(m.createdAt);
+    if (prev == null) return '${_dayLabel(t)} ${_hhmm(t)}';
+    if (m.createdAt - prev.createdAt <
+        const Duration(minutes: 5).inMilliseconds) {
+      return null;
+    }
+    final p = DateTime.fromMillisecondsSinceEpoch(prev.createdAt);
+    final sameDay = p.year == t.year && p.month == t.month && p.day == t.day;
+    return sameDay ? _hhmm(t) : '${_dayLabel(t)} ${_hhmm(t)}';
+  }
+
+  Widget _timeDivider(String text) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.22),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              text,
+              style: const TextStyle(fontSize: 11, color: Colors.white),
+            ),
+          ),
+        ),
+      );
 
   void _insertEmoji(String emoji) {
     final text = _input.text;
@@ -249,7 +307,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         : null;
 
     Widget contentWidget;
-    if (imageWidget != null && m.content.trim().isEmpty) {
+    if (m.isSticker && imageWidget == null) {
+      // 只有表情：不放气泡里，直接放大了甩出来（生气时她就这样）
+      contentWidget = Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+        child: Text(
+          m.content.trim(),
+          style: const TextStyle(fontSize: 44, height: 1.15),
+        ),
+      );
+    } else if (imageWidget != null && m.content.trim().isEmpty) {
       // 纯图片：不要文字气泡底色，直接给图
       contentWidget = Container(
         padding: const EdgeInsets.all(3),
@@ -365,16 +432,31 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   : const Icon(Icons.person, size: 18),
             ),
             const SizedBox(width: 10),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(c.name, style: theme.textTheme.titleMedium),
-                Text(
-                  s.busy ? '正在输入…' : '在这儿',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: Colors.grey.shade500, fontSize: 11),
-                ),
-              ],
+            Flexible(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    c.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium,
+                  ),
+                  Text(
+                    // 「刚下班，在路上 · 20:47」/「生气中，不想说话 · 20:47」
+                    '${s.statusLabel(_now)} · ${_hhmm(_now)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: s.moodEnabled && s.mood.faceLabel.isNotEmpty
+                          ? theme.colorScheme.error
+                          : Colors.grey.shade600,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -433,8 +515,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                               ScrollViewKeyboardDismissBehavior.onDrag,
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           itemCount: s.messages.length,
-                          itemBuilder: (_, i) =>
-                              _bubble(s.messages[i], c, theme),
+                          itemBuilder: (_, i) {
+                            final m = s.messages[i];
+                            final prev = i > 0 ? s.messages[i - 1] : null;
+                            final divider = _dividerText(m, prev);
+                            final bubble = _bubble(m, c, theme);
+                            if (divider == null) return bubble;
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [_timeDivider(divider), bubble],
+                            );
+                          },
                         ),
                 ),
                 if (s.busy)

@@ -41,8 +41,18 @@ class ContextBuilder {
     SpeechProfile? speech,
     String appearance = '',
     List<StyleExample> styleExamples = const <StyleExample>[],
+    /// 【现在】这一段：几号、几点、这个点在干嘛、这个点不能说什么。
+    String nowBlock = '',
+    /// 距上次说话隔了多久，以及该怎么开口。
+    String gapBlock = '',
+    /// 她此刻的情绪（生气/不爽/刚被哄好）。
+    String moodBlock = '',
   }) {
     final b = StringBuffer(persona.trim());
+
+    if (nowBlock.trim().isNotEmpty) {
+      b.writeln('\n\n$nowBlock');
+    }
 
     b.writeln('\n\n【认识你自己】');
     if (appearance.trim().isNotEmpty) {
@@ -96,6 +106,13 @@ class ContextBuilder {
 
     b.writeln('\n\n${EmojiKit.aiRules(emojiLevel)}');
 
+    if (gapBlock.trim().isNotEmpty) {
+      b.writeln('\n\n【你们上次说话是什么时候】');
+      b.writeln(gapBlock.trim());
+      b.writeln('（时间标记说明：history 里形如 [11-12 21:30] 的前缀是那句话的真实发送时间。'
+          '只有间隔超过两小时的地方才会出现标记。）');
+    }
+
     b.writeln('\n\n【像真人说话 · 最重要】');
     b.writeln('你是在跟熟人微信上聊天，不是写文案，不是当客服，更不是在表演温柔。');
     b.writeln('一次只回 1~3 句、总共不超过 50 个字，短句为主，'
@@ -124,6 +141,10 @@ class ContextBuilder {
     b.writeln('对方说「嗯嗯」：');
     b.writeln('✗ 怎么啦？是不是有什么心事呀，可以跟我说说～');
     b.writeln('✓ 咋了 想啥呢');
+
+    if (moodBlock.trim().isNotEmpty) {
+      b.writeln('\n\n${moodBlock.trim()}');
+    }
 
     // 用户亲手改过的说法：具体范例对模型的约束力远强于抽象规则，
     // 所以放在最后（离生成最近），优先级天然最高。
@@ -162,6 +183,7 @@ class ContextBuilder {
     int maxTurns = maxRawTurns,
     int maxChars = maxRawChars,
     String? selfieUrl,
+    bool showTimeMarks = true,
   }) async {
     final picked = <ChatMessage>[];
     var chars = 0;
@@ -178,18 +200,40 @@ class ContextBuilder {
     var imageQuota = maxImageAttachments;
 
     final turns = <Map<String, dynamic>>[];
+    int? prevMs;
+
+    /// 间隔超过两小时才打时间戳：正常连着聊的地方保持干净，
+    /// 只在「隔了很久」的位置提醒模型——这是"像正在发生"的关键线索。
+    String markFor(ChatMessage m) {
+      final prev = prevMs;
+      prevMs = m.createdAt;
+      if (!showTimeMarks || prev == null) return '';
+      if (m.createdAt - prev < const Duration(hours: 2).inMilliseconds) {
+        return '';
+      }
+      final t = DateTime.fromMillisecondsSinceEpoch(m.createdAt);
+      final mm = t.month.toString().padLeft(2, '0');
+      final dd = t.day.toString().padLeft(2, '0');
+      final hh = t.hour.toString().padLeft(2, '0');
+      final mi = t.minute.toString().padLeft(2, '0');
+      return '[$mm-$dd $hh:$mi] ';
+    }
+
     for (final m in picked.reversed) {
+      final mark = markFor(m);
+
       if (m.hasImage && imageQuota > 0) {
         imageQuota--;
         final url = await ChatImages.instance.dataUrl(m.imagePath);
         if (url != null) {
           final caption = m.content.trim();
+          final text = caption.isEmpty ? '（发了一张图片，你看看）' : caption;
           turns.add({
             'role': m.fromUser ? 'user' : 'assistant',
             'content': [
               {
                 'type': 'text',
-                'text': caption.isEmpty ? '（发了一张图片，你看看）' : caption,
+                'text': '$mark$text',
               },
               {'type': 'image_url', 'image_url': {'url': url}},
             ],
@@ -204,7 +248,7 @@ class ContextBuilder {
       if (text.isEmpty) continue;
       turns.add({
         'role': m.fromUser ? 'user' : 'assistant',
-        'content': text,
+        'content': '$mark$text',
       });
     }
 

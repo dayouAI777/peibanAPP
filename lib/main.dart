@@ -11,6 +11,7 @@ import 'pages/persona_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/style_examples_page.dart';
 import 'services/proactive_service.dart';
+import 'services/silent_updater.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
 
@@ -35,6 +36,10 @@ Future<void> main() async {
     state: state,
     launchedFromNotification: fromNotification && state.companion != null,
   ));
+
+  // 界面先出来，升级的事在后台慢慢做：查版本 → 下安装包 → 等用户点安装。
+  // 不 await，不挡首帧，失败完全静默。
+  SilentUpdater.instance.autoStart();
 }
 
 class PeiBanApp extends StatelessWidget {

@@ -1,10 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:peiban_app/data/emoji_kit.dart';
 import 'package:peiban_app/models/chat_background.dart';
+import 'package:peiban_app/models/life_state.dart';
+import 'package:peiban_app/models/message.dart';
 import 'package:peiban_app/models/persona_space.dart';
 import 'package:peiban_app/models/style_example.dart';
 import 'package:peiban_app/models/user_note.dart';
+import 'package:peiban_app/services/clock_service.dart';
 import 'package:peiban_app/services/context_builder.dart';
+import 'package:peiban_app/services/mood_service.dart';
 import 'package:peiban_app/services/persona_analyst.dart';
 import 'package:peiban_app/services/user_manual.dart';
 
@@ -130,5 +134,204 @@ void main() {
     expect(p.isPreset, isTrue);
     expect(p.veil, 0.4);
     expect(ChatPresets.all.length, greaterThanOrEqualTo(4));
+  });
+
+  // ——— 时间感 ———
+
+  test('晚上八点她绝不可能还在上班', () {
+    // 2026-11-13 是星期五，20:30
+    final now = DateTime(2026, 11, 13, 20, 30);
+    final life = ClockService.describe(now: now);
+    expect(life.workday, isTrue);
+    expect(life.activity.contains('在上班'), isFalse);
+    expect(life.activity.contains('加班'), isFalse);
+    expect(life.rules.any((r) => r.contains('早就下班')), isTrue);
+  });
+
+  test('加班安排生效时才允许晚上待在公司', () {
+    final now = DateTime(2026, 11, 13, 20, 30);
+    final overtime = LifeEvent(
+      kind: 'overtime',
+      title: '今晚要加班',
+      detail: '临时来了活',
+      startMs: DateTime(2026, 11, 13, 18, 30).millisecondsSinceEpoch,
+      endMs: DateTime(2026, 11, 13, 22, 30).millisecondsSinceEpoch,
+    );
+    final life = ClockService.describe(now: now, event: overtime);
+    expect(life.activity.contains('加班'), isTrue);
+    expect(life.rules.any((r) => r.contains('早就下班')), isFalse);
+  });
+
+  test('周末不会说自己在开会通勤，深夜会困', () {
+    final sat = ClockService.describe(now: DateTime(2026, 11, 14, 14, 0));
+    expect(sat.workday, isFalse);
+    expect(sat.rules.any((r) => r.contains('今天是周末')), isTrue);
+
+    final night = ClockService.describe(now: DateTime(2026, 11, 14, 3, 0));
+    expect(night.period, '凌晨');
+    expect(night.rules.any((r) => r.contains('深夜')), isTrue);
+  });
+
+  test('明天的旅行今天不该生效', () {
+    final travel = LifeEvent(
+      kind: 'travel',
+      title: '在大理玩',
+      detail: '请了两天假',
+      startMs: DateTime(2026, 11, 16, 8).millisecondsSinceEpoch,
+      endMs: DateTime(2026, 11, 18, 8).millisecondsSinceEpoch,
+    );
+    final today = ClockService.describe(now: DateTime(2026, 11, 13, 20), event: travel);
+    expect(today.event, isNull);
+
+    final during = ClockService.describe(now: DateTime(2026, 11, 17, 15), event: travel);
+    expect(during.event, isNotNull);
+    expect(during.rules.any((r) => r.contains('不在家')), isTrue);
+  });
+
+  test('隔了好几天不会假装一直在聊', () {
+    final almostADay = ClockService.gapRule(
+      d: const Duration(hours: 27),
+      overnight: false,
+      sheSpokeLast: true,
+    );
+    expect(almostADay.contains('不要假装'), isTrue);
+
+    final long = ClockService.gapRule(
+      d: const Duration(days: 9),
+      overnight: false,
+      sheSpokeLast: false,
+    );
+    expect(long.contains('9 天'), isTrue);
+  });
+
+  test('隔夜不算被冷落，白天隔半天才算', () {
+    final last = DateTime(2026, 11, 12, 23, 0);
+    final morning = DateTime(2026, 11, 13, 9, 0);
+    expect(ClockService.looksLikeOvernight(last, morning), isTrue);
+
+    final afternoon = DateTime(2026, 11, 13, 16, 0);
+    expect(ClockService.looksLikeOvernight(last, afternoon), isFalse);
+  });
+
+  test('作息类型认得出学生和自由职业', () {
+    expect(ClockService.rhythmOf('大四学生', ''), Rhythm.student);
+    expect(ClockService.rhythmOf('自由撰稿人', ''), Rhythm.freelance);
+    expect(ClockService.rhythmOf('程序员', ''), Rhythm.office);
+    expect(ClockService.rhythmOf('护士', '上夜班'), Rhythm.shift);
+  });
+
+  // ——— 情绪 ———
+
+  test('被晾十几个小时会生气，隔夜不算', () {
+    final afterOvernight = MoodService.syncWithGap(
+      const MoodState(),
+      gap: const Duration(hours: 9),
+      sheSpokeLast: true,
+      overnight: true,
+    );
+    expect(afterOvernight.anger, 0);
+
+    final ignored = MoodService.syncWithGap(
+      const MoodState(),
+      gap: const Duration(hours: 13),
+      sheSpokeLast: true,
+      overnight: false,
+    );
+    expect(ignored.anger, greaterThanOrEqualTo(MoodState.annoyedAt));
+    expect(ignored.reason.contains('没回'), isTrue);
+  });
+
+  test('syncWithGap 幂等：反复调用不会越骂越气', () {
+    var m = const MoodState();
+    for (var i = 0; i < 5; i++) {
+      m = MoodService.syncWithGap(
+        m,
+        gap: const Duration(hours: 13),
+        sheSpokeLast: true,
+        overnight: false,
+      );
+    }
+    expect(m.anger, lessThan(MoodState.coldAt));
+  });
+
+  test('骂一句会生气，再补一句就冷战；哄两次才回得来', () {
+    var r = MoodService.afterUserMessage(
+      const MoodState(),
+      text: '滚，别烦我',
+      recentUserTexts: const [],
+    );
+    expect(r.mood.isAngry, isTrue);
+
+    // 再顶一句 → 冷战
+    r = MoodService.afterUserMessage(r.mood,
+        text: '随便你，懒得跟你说', recentUserTexts: const []);
+    expect(r.mood.isCold, isTrue);
+
+    // 第一句哄：离开冷战，还在生气
+    r = MoodService.afterUserMessage(r.mood, text: '对不起，我不该那样说',
+        recentUserTexts: const []);
+    expect(r.coaxed, isTrue);
+    expect(r.mood.isCold, isFalse);
+    expect(r.mood.isAngry, isTrue);
+
+    // 继续哄：两轮之内必须见好，不然就是耍人
+    r = MoodService.afterUserMessage(r.mood, text: '别生气了好不好，我错了',
+        recentUserTexts: const []);
+    expect(r.mood.anger, lessThan(MoodState.annoyedAt));
+    expect(r.justRecovered, isTrue);
+  });
+
+  test('连着敷衍会加气，认真解释会消气', () {
+    final base = const MoodState(anger: 40);
+    final slacked = MoodService.afterUserMessage(base,
+        text: '哦', recentUserTexts: const ['嗯', '哦', '行']);
+    expect(slacked.mood.anger, greaterThan(40));
+
+    final explained = MoodService.afterUserMessage(base,
+        text: '刚在开会手机放桌上了，没看到你消息，别多想啊',
+        recentUserTexts: const []);
+    expect(explained.mood.anger, lessThan(40));
+  });
+
+  test('冷战先甩一个生气表情，再晾着', () {
+    expect(MoodService.coldSticker(coldTurns: 1, coaxed: false), '😤');
+    expect(MoodService.coldSticker(coldTurns: 2, coaxed: false), isNull);
+    expect(MoodService.coldSticker(coldTurns: 1, coaxed: true), '🥺');
+  });
+
+  test('生气时 prompt 会带情绪段，平静时不带', () {
+    expect(MoodService.promptBlock(const MoodState()), '');
+    final block = MoodService.promptBlock(
+        const MoodState(anger: 60, reason: '你半天没回我'));
+    expect(block.contains('你半天没回我'), isTrue);
+    expect(block.contains('不主动关心他'), isTrue);
+    expect(block.contains('不许骂人'), isTrue);
+  });
+
+  test('只有表情的消息会被当成表情包', () {
+    const sticker = ChatMessage(
+        companionId: 1, role: 'assistant', content: '😤', createdAt: 0);
+    expect(sticker.isSticker, isTrue);
+
+    const text = ChatMessage(
+        companionId: 1, role: 'assistant', content: '算了', createdAt: 0);
+    expect(text.isSticker, isFalse);
+  });
+
+  test('时间块和断层块会进 system', () {
+    final system = ContextBuilder.buildSystem(
+      persona: '你是阿雾',
+      notes: const [],
+      chunks: const [],
+      window: 1000,
+      nowBlock: '【现在】现在是 11月13日 星期五 20:30',
+      gapBlock: '上一次说话是 2 天前',
+      moodBlock: '【你此刻的情绪】你在生气',
+    );
+    expect(system.contains('11月13日'), isTrue);
+    expect(system.contains('2 天前'), isTrue);
+    expect(system.contains('你在生气'), isTrue);
+    // 顺序：人设 → 现在 → 情绪，情绪要压在靠后的位置
+    expect(system.indexOf('你是阿雾') < system.indexOf('11月13日'), isTrue);
   });
 }

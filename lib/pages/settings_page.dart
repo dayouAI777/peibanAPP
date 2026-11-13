@@ -5,6 +5,7 @@ import '../data/emoji_kit.dart';
 import '../data/prefs.dart';
 import '../services/update_service.dart';
 import '../state/app_state.dart';
+import '../widgets/silent_update_banner.dart';
 import '../widgets/update_helper.dart';
 
 /// 设置页。API Key 只写进本机，不进仓库、不进 APK、不上传。
@@ -29,6 +30,8 @@ class _SettingsPageState extends State<SettingsPage> {
   int _contextWindow = 1000;
   bool _manualEnabled = true;
   bool _autoUpdate = true;
+  bool _silentUpdate = true;
+  bool _moodEnabled = true;
   String _versionText = '—';
   String? _testMessage;
   String? _updateStatus;
@@ -50,6 +53,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _contextWindow = await Prefs.contextLimit();
     _manualEnabled = await Prefs.manualEnabled();
     _autoUpdate = await Prefs.autoUpdateCheck();
+    _silentUpdate = await Prefs.silentUpdateEnabled();
+    _moodEnabled = await Prefs.moodEnabled();
     final v = await _updateService.localVersion();
     if (!mounted) return;
     setState(() {
@@ -98,6 +103,8 @@ class _SettingsPageState extends State<SettingsPage> {
     await Prefs.setContextLimit(_contextWindow);
     await Prefs.setManualEnabled(_manualEnabled);
     await Prefs.setAutoUpdateCheck(_autoUpdate);
+    await Prefs.setSilentUpdateEnabled(_silentUpdate);
+    await Prefs.setMoodEnabled(_moodEnabled);
     await app.applySettings();
     if (!mounted) return;
     setState(() => _saving = false);
@@ -193,6 +200,18 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('启动时自动检查更新'),
             subtitle: const Text('只检查、不自动下载；发现新版会在首页显示提示'),
             onChanged: (v) => setState(() => _autoUpdate = v),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _silentUpdate,
+            title: const Text('后台静默升级'),
+            subtitle: const Text(
+                '启动后在后台查版本、下安装包，不挡聊天也不弹窗；下好才提示一下，装不装你说了算'),
+            onChanged: (v) => setState(() => _silentUpdate = v),
+          ),
+          const Padding(
+            padding: EdgeInsets.only(top: 4, bottom: 6),
+            child: SilentUpdateBanner(showProgress: true),
           ),
           const Divider(height: 28),
 
@@ -299,6 +318,14 @@ class _SettingsPageState extends State<SettingsPage> {
             title: const Text('记录我的行为习惯'),
             subtitle: const Text('AI 判断 + 内置规则，只记稳定的习惯'),
             onChanged: (v) => setState(() => _manualEnabled = v),
+          ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _moodEnabled,
+            title: const Text('她会有情绪'),
+            subtitle: const Text(
+                '一直不理她会生气、会甩个表情不说话，得哄；哄好了会自己下台阶。关掉就永远好脾气'),
+            onChanged: (v) => setState(() => _moodEnabled = v),
           ),
           ListTile(
             contentPadding: EdgeInsets.zero,

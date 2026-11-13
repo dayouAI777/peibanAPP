@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:http/http.dart' as http;
@@ -9,7 +11,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../data/prefs.dart';
 import '../models/update_info.dart';
-import 'dart:io';
+import 'apk_downloader.dart';
 
 class LocalVersion {
   final String version;
@@ -24,21 +26,41 @@ class UpdateCheckResult {
   final LocalVersion local;
   final String? error;
 
+  /// 结果来自本机缓存（网络没通），用来在界面上说清「这是上次的清单」。
+  final bool fromCache;
+
   const UpdateCheckResult({
     required this.hasUpdate,
     required this.local,
     this.info,
     this.error,
+    this.fromCache = false,
   });
 }
 
 /// 在线升级：Git 仓库里的 version.json 就是「升级后台」，不需要服务器。
-/// 版本清单优先走 raw，失败退到 GitHub contents 接口（国内网络更稳）。
+///
+/// 国内访问 GitHub 的三个域名时通时断，旧写法是「raw 超时 12 秒 → 再试 API 15 秒」，
+/// 慢的时候启动要空等近半分钟。这里改成：
+///   1) 三个源并发竞速，谁先回用谁（raw / jsDelivr CDN / GitHub API）；
+///   2) 成功一次就把清单缓存到本机，下次先拿缓存判断，再后台刷新；
+///   3) 全部失败且缓存未过期时，用缓存结果照常提示升级，不因为网络抽风就「检查失败」。
 class UpdateService {
   static const String rawUrl =
       'https://raw.githubusercontent.com/dayouAI777/peibanAPP/main/version.json';
+
+  /// jsDelivr 的 GitHub 镜像：国内通常比 raw 通得快，且本身就是 CDN。
+  static const String cdnUrl =
+      'https://cdn.jsdelivr.net/gh/dayouAI777/peibanAPP@main/version.json';
+
   static const String apiUrl =
       'https://api.github.com/repos/dayouAI777/peibanAPP/contents/version.json';
+
+  /// 三源竞速的总时限。超过就认输，用缓存兜底。
+  static const Duration raceTimeout = Duration(seconds: 10);
+
+  /// 缓存多久算新鲜：超过这个时间，网络又读不到，就不再拿旧清单说「有新版本」。
+  static const Duration cacheTtl = Duration(days: 7);
 
   Future<LocalVersion> localVersion() async {
     final i = await PackageInfo.fromPlatform();
@@ -48,38 +70,109 @@ class UpdateService {
     );
   }
 
-  Future<String> _fetchVersionJson() async {
-    try {
-      final r = await http
-          .get(Uri.parse(rawUrl))
-          .timeout(const Duration(seconds: 12));
-      if (r.statusCode == 200) {
-        return utf8.decode(r.bodyBytes, allowMalformed: true);
-      }
-    } catch (_) {
-      // 换备用源
-    }
+  // ——— 拉清单：三源并发，谁先成功算谁 ———
 
+  Future<String> _tryRaw() async {
+    final r = await http
+        .get(Uri.parse(rawUrl))
+        .timeout(const Duration(seconds: 8));
+    if (r.statusCode != 200) throw Exception('raw ${r.statusCode}');
+    return utf8.decode(r.bodyBytes, allowMalformed: true);
+  }
+
+  Future<String> _tryCdn() async {
+    final r = await http.get(
+      Uri.parse(cdnUrl),
+      headers: {'User-Agent': 'peiban-app'},
+    ).timeout(const Duration(seconds: 8));
+    if (r.statusCode != 200) throw Exception('cdn ${r.statusCode}');
+    final text = utf8.decode(r.bodyBytes, allowMalformed: true);
+    // CDN 偶尔会把 404 页面 200 返回，这里用 JSON 解析做一次校验
+    jsonDecode(text);
+    return text;
+  }
+
+  Future<String> _tryApi() async {
     final r = await http.get(
       Uri.parse(apiUrl),
       headers: {
         'Accept': 'application/vnd.github+json',
         'User-Agent': 'peiban-app',
       },
-    ).timeout(const Duration(seconds: 15));
-    if (r.statusCode != 200) {
-      throw Exception('读不到版本清单（HTTP ${r.statusCode}）');
-    }
+    ).timeout(const Duration(seconds: 8));
+    if (r.statusCode != 200) throw Exception('api ${r.statusCode}');
     final m = jsonDecode(utf8.decode(r.bodyBytes, allowMalformed: true))
         as Map<String, dynamic>;
     final content = (m['content'] as String?)?.replaceAll('\n', '') ?? '';
     return utf8.decode(base64Decode(content), allowMalformed: true);
   }
 
-  Future<UpdateCheckResult> check() async {
-    final local = await localVersion();
+  Future<String> _fetchVersionJson() {
+    final completer = Completer<String>();
+    final sources = <Future<String>>[_tryRaw(), _tryCdn(), _tryApi()];
+    var failed = 0;
+
+    for (final f in sources) {
+      f.then(
+        (v) {
+          if (!completer.isCompleted) completer.complete(v);
+        },
+        onError: (Object _, StackTrace __) {
+          failed++;
+          if (failed == sources.length && !completer.isCompleted) {
+            completer.completeError(Exception('三个源都没连上'));
+          }
+        },
+      );
+    }
+
+    return completer.future.timeout(raceTimeout);
+  }
+
+  /// 读清单：网络优先；[preferCache] 为真时只要缓存还新鲜就立刻返回（毫秒级）。
+  ///
+  /// 无论哪种方式，成功了都会刷新缓存，下次启动更快。
+  Future<String> _readManifest({
+    bool preferCache = false,
+    bool refreshInBackground = true,
+  }) async {
+    final cached = await Prefs.cachedVersionJson();
+    final cachedAt = await Prefs.cachedVersionAt();
+    final fresh = cached.trim().isNotEmpty &&
+        DateTime.now().millisecondsSinceEpoch - cachedAt <
+            cacheTtl.inMilliseconds;
+
+    if (preferCache && fresh) {
+      // 先用旧的顶上，同时后台悄悄刷新，不占用启动时间
+      if (refreshInBackground) {
+        unawaited(_fetchVersionJson().then((v) {
+          Prefs.cacheVersionJson(v);
+        }).catchError((_) {}));
+      }
+      return cached;
+    }
+
     try {
-      final info = UpdateInfo.fromJson(await _fetchVersionJson());
+      final v = await _fetchVersionJson();
+      await Prefs.cacheVersionJson(v);
+      return v;
+    } catch (e) {
+      if (fresh) return cached;
+      rethrow;
+    }
+  }
+
+  /// 检查更新。
+  ///
+  /// [preferCache] 给「启动时静默检查」用：有缓存就秒回，网络在后台补。
+  /// 失败时若有可用缓存，会带 [UpdateCheckResult.fromCache] 返回，不当作错误。
+  Future<UpdateCheckResult> check({bool preferCache = false}) async {
+    final local = await localVersion();
+    final hadCache = (await Prefs.cachedVersionJson()).trim().isNotEmpty;
+    try {
+      final info = UpdateInfo.fromJson(
+        await _readManifest(preferCache: preferCache),
+      );
       await Prefs.setLastUpdateCheck(DateTime.now().millisecondsSinceEpoch);
       final ignored = await Prefs.ignoredBuild();
       final has = info.build > local.build &&
@@ -87,6 +180,29 @@ class UpdateService {
           info.apkUrl.trim().isNotEmpty;
       return UpdateCheckResult(hasUpdate: has, info: info, local: local);
     } catch (e) {
+      // 网络彻底不通：只要能读到一份还没过期的缓存，就照常判断版本
+      final cached = await Prefs.cachedVersionJson();
+      final cachedAt = await Prefs.cachedVersionAt();
+      final fresh = cached.trim().isNotEmpty &&
+          DateTime.now().millisecondsSinceEpoch - cachedAt <
+              cacheTtl.inMilliseconds;
+      if (hadCache && fresh) {
+        try {
+          final info = UpdateInfo.fromJson(cached);
+          final ignored = await Prefs.ignoredBuild();
+          final has = info.build > local.build &&
+              info.build != ignored &&
+              info.apkUrl.trim().isNotEmpty;
+          return UpdateCheckResult(
+            hasUpdate: has,
+            info: info,
+            local: local,
+            fromCache: true,
+          );
+        } catch (_) {
+          // 缓存也坏了，走下面的报错
+        }
+      }
       return UpdateCheckResult(
         hasUpdate: false,
         local: local,
@@ -98,8 +214,10 @@ class UpdateService {
   static const int _maxAttempts = 3;
   static const Duration _connectTimeout = Duration(seconds: 15);
 
-  /// 下载新版 APK。国内连 GitHub 下载域名偶发 TCP 超时，
-  /// 这里做「明确超时 + 自动重试 + 说人话的报错」，不用用户手动点第二次。
+  /// 下载新版 APK。
+  ///
+  /// 真实链路是：先挑最快的镜像 → 支持 Range 就 8 路分段并发 → 失败退回单连接。
+  /// 具体在 [ApkDownloader] 里，这里只负责落盘位置和把错误翻译成人话。
   Future<String> download(
     String url,
     void Function(int received, int total) onProgress, {
@@ -110,37 +228,21 @@ class UpdateService {
     final f = File(path);
     if (await f.exists()) await f.delete();
 
-    Object? lastError;
-    for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
-      try {
-        onProgress(0, 0);
-        onStatus?.call(attempt == 1
-            ? '正在连接…'
-            : '第 $attempt 次尝试（共 $_maxAttempts 次）…');
-        await Dio().download(
-          url,
-          path,
-          onReceiveProgress: onProgress,
-          options: Options(
-            connectTimeout: _connectTimeout,
-            sendTimeout: _connectTimeout,
-            receiveTimeout: const Duration(minutes: 5),
-            followRedirects: true,
-          ),
-        );
-        return path;
-      } catch (e) {
-        lastError = e;
-        // 删掉半成品，避免下次把半个 APK 当完整包
-        if (await f.exists()) await f.delete();
-        if (attempt < _maxAttempts) {
-          onStatus?.call('没连上，正在重试（${attempt + 1}/$_maxAttempts）…');
-          await Future.delayed(Duration(seconds: attempt));
-        }
-      }
+    try {
+      return await ApkDownloader.download(
+        url: url,
+        destPath: path,
+        onProgress: onProgress,
+        onStatus: onStatus,
+      );
+    } catch (e) {
+      if (await f.exists()) await f.delete();
+      throw Exception(_friendlyError(e));
     }
-    throw Exception(_friendlyError(lastError));
   }
+
+  /// 后台静默下载：没有进度回调给界面，失败直接抛给调用方（调用方自己静默处理）。
+  Future<String> downloadSilently(String url) => download(url, (_, __) {});
 
   String _friendlyError(Object? e) {
     final s = e.toString();
