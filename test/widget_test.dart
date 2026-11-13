@@ -368,4 +368,67 @@ void main() {
     expect(UpdateService.buildOf('{}'), 0);
     expect(UpdateService.newestManifest(['<html>404</html>', good]), good);
   });
+
+  test('split-per-abi 的 versionCode 不能直接跟清单 build 比', () {
+    // 1.6.2 的 arm64 包：versionCode 2014，清单 build 14
+    expect(UpdateService.normalizeBuild(2014), 14);
+    expect(UpdateService.normalizeBuild(1013), 13);
+    expect(UpdateService.normalizeBuild(4014), 14);
+    // 没有偏移的（universal 包 / 老版本）原样返回
+    expect(UpdateService.normalizeBuild(14), 14);
+    expect(UpdateService.normalizeBuild(0), 0);
+
+    // 这就是线上那个 bug：装 1.6.1（2013）检查 1.6.2（build 14）说没新版本
+    expect(
+      UpdateService.isNewer(
+        remoteVersion: '1.6.2',
+        remoteBuild: 14,
+        localVersion: '1.6.1',
+        localBuild: UpdateService.normalizeBuild(2013),
+      ),
+      isTrue,
+    );
+    // 已经是 1.6.2 了就别再提示
+    expect(
+      UpdateService.isNewer(
+        remoteVersion: '1.6.2',
+        remoteBuild: 14,
+        localVersion: '1.6.2',
+        localBuild: UpdateService.normalizeBuild(2014),
+      ),
+      isFalse,
+    );
+    // 版本名一样、远端 build 更大：算新（重打包）
+    expect(
+      UpdateService.isNewer(
+        remoteVersion: '1.6.2',
+        remoteBuild: 15,
+        localVersion: '1.6.2',
+        localBuild: 14,
+      ),
+      isTrue,
+    );
+  });
+
+  test('版本名按数字逐段比，不是按字符串比', () {
+    expect(UpdateService.compareVersion('1.6.10', '1.6.9'), 1);
+    expect(UpdateService.compareVersion('1.10.0', '1.9.9'), 1);
+    expect(UpdateService.compareVersion('2.0', '1.9.9'), 1);
+    expect(UpdateService.compareVersion('1.6.2', '1.6.2'), 0);
+    expect(UpdateService.compareVersion('1.6.1', '1.6.2'), -1);
+    // 带 +build 后缀也认
+    expect(UpdateService.compareVersion('1.6.2+14', '1.6.1+13'), 1);
+    // 解析不了就交回 build 判断，别瞎猜
+    expect(UpdateService.compareVersion('1.6-beta', '1.6.1'), isNull);
+    expect(UpdateService.compareVersion('', '1.6.1'), isNull);
+    expect(
+      UpdateService.isNewer(
+        remoteVersion: '1.6-beta',
+        remoteBuild: 14,
+        localVersion: '1.6.1',
+        localBuild: 2013,
+      ),
+      isTrue, // 名字判不了，退回 14 > 13
+    );
+  });
 }

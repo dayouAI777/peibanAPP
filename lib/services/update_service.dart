@@ -14,10 +14,24 @@ import '../models/update_info.dart';
 import 'apk_downloader.dart';
 
 class LocalVersion {
+  /// 版本名，如 `1.6.2`。跟 version.json 里的 `version` 是同一套写法。
   final String version;
+
+  /// 归一化后的 build（清单里 `build` 那个数，如 14）。
+  ///
+  /// **不是 APK 的 versionCode**。split-per-abi 打包时 Flutter 会自动给 versionCode
+  /// 加 ABI 偏移（arm64 是 +2000），1.6.2 的包 versionCode 是 2014，而清单写的是 14。
+  /// 拿 2014 去跟 14 比，永远得出「没有新版本」——V1.6.1 起检查更新就是这么瞎了半个月。
   final int build;
 
-  const LocalVersion({required this.version, required this.build});
+  /// 原始的 versionCode（2014 这种），只在排错时看。
+  final int code;
+
+  const LocalVersion({
+    required this.version,
+    required this.build,
+    this.code = 0,
+  });
 }
 
 class UpdateCheckResult {
@@ -68,10 +82,71 @@ class UpdateService {
 
   Future<LocalVersion> localVersion() async {
     final i = await PackageInfo.fromPlatform();
+    final code = int.tryParse(i.buildNumber) ?? 0;
     return LocalVersion(
       version: i.version,
-      build: int.tryParse(i.buildNumber) ?? 0,
+      build: normalizeBuild(code),
+      code: code,
     );
+  }
+
+  /// 把 APK 的 versionCode 还原成清单里的 build。
+  ///
+  /// `--split-per-abi` 打出来的包，versionCode = ABI 偏移 × 1000 + build
+  /// （armeabi-v7a 1xxx / arm64-v8a 2xxx / x86_64 4xxx）。
+  /// 我们的 build 号远小于 1000，所以取模就能还原。
+  @visibleForTesting
+  static int normalizeBuild(int code) => code >= 1000 ? code % 1000 : code;
+
+  /// 比较两个版本名，a 大返回 1，相等 0，a 小 -1；解析不了返回 null。
+  ///
+  /// 逐段比数字而不是比字符串，否则 `1.6.10` 会被判成小于 `1.6.9`。
+  @visibleForTesting
+  static int? compareVersion(String a, String b) {
+    final pa = _versionParts(a);
+    final pb = _versionParts(b);
+    if (pa == null || pb == null) return null;
+    final n = pa.length > pb.length ? pa.length : pb.length;
+    for (var i = 0; i < n; i++) {
+      final x = i < pa.length ? pa[i] : 0;
+      final y = i < pb.length ? pb[i] : 0;
+      if (x != y) return x > y ? 1 : -1;
+    }
+    return 0;
+  }
+
+  static List<int>? _versionParts(String s) {
+    // 去掉 `+14` 这类 build 后缀和首尾空白
+    final t = s.trim().split('+').first.trim();
+    if (t.isEmpty) return null;
+    final out = <int>[];
+    for (final seg in t.split('.')) {
+      final v = int.tryParse(seg.trim());
+      if (v == null) return null; // 出现过 `1.6-beta` 这种就别硬猜
+      out.add(v);
+    }
+    return out;
+  }
+
+  /// 远端这份清单是不是比本地新。
+  ///
+  /// 主判据是版本名（1.6.2 > 1.6.1），名字相同才比 build——这样跟怎么打包无关，
+  /// 不会再被 ABI 偏移坑一次。版本名解析不出来（老版本/手写脏数据）时
+  /// 退回归一化后的 build 比较。
+  @visibleForTesting
+  static bool isNewer({
+    required String remoteVersion,
+    required int remoteBuild,
+    required String localVersion,
+    required int localBuild,
+  }) {
+    final cmp = compareVersion(remoteVersion, localVersion);
+    if (cmp != null) {
+      if (cmp != 0) return cmp > 0;
+      // 版本名一样：只有当远端 build 更大才算新（同一个版本重打包）
+      return remoteBuild > normalizeBuild(localBuild);
+    }
+    return remoteBuild > normalizeBuild(localBuild);
   }
 
   // ——— 拉清单：三源并发，谁先成功算谁 ———
@@ -223,7 +298,12 @@ class UpdateService {
       );
       await Prefs.setLastUpdateCheck(DateTime.now().millisecondsSinceEpoch);
       final ignored = await Prefs.ignoredBuild();
-      final has = info.build > local.build &&
+      final has = isNewer(
+            remoteVersion: info.version,
+            remoteBuild: info.build,
+            localVersion: local.version,
+            localBuild: local.build,
+          ) &&
           info.build != ignored &&
           info.apkUrl.trim().isNotEmpty;
       return UpdateCheckResult(hasUpdate: has, info: info, local: local);
@@ -238,7 +318,12 @@ class UpdateService {
         try {
           final info = UpdateInfo.fromJson(cached);
           final ignored = await Prefs.ignoredBuild();
-          final has = info.build > local.build &&
+          final has = isNewer(
+                remoteVersion: info.version,
+                remoteBuild: info.build,
+                localVersion: local.version,
+                localBuild: local.build,
+              ) &&
               info.build != ignored &&
               info.apkUrl.trim().isNotEmpty;
           return UpdateCheckResult(
