@@ -10,6 +10,7 @@ import 'package:peiban_app/services/clock_service.dart';
 import 'package:peiban_app/services/context_builder.dart';
 import 'package:peiban_app/services/mood_service.dart';
 import 'package:peiban_app/services/persona_analyst.dart';
+import 'package:peiban_app/services/update_service.dart';
 import 'package:peiban_app/services/user_manual.dart';
 
 void main() {
@@ -333,5 +334,22 @@ void main() {
     expect(system.contains('你在生气'), isTrue);
     // 顺序：人设 → 现在 → 情绪，情绪要压在靠后的位置
     expect(system.indexOf('你是阿雾') < system.indexOf('11月13日'), isTrue);
+  });
+
+  test('清单竞速挑 build 最大的那份，不听谁的网快', () {
+    const stale = '{"version":"1.6.0","build":12}';
+    const fresh = '{"version":"1.6.1","build":13}';
+    // CDN 先答（旧）也不能用
+    expect(UpdateService.newestManifest([stale, fresh]), fresh);
+    expect(UpdateService.newestManifest([fresh, stale]), fresh);
+    // 只有一份就照用
+    expect(UpdateService.newestManifest([stale]), stale);
+  });
+
+  test('坏清单不会盖掉好清单', () {
+    const good = '{"version":"1.6.1","build":13}';
+    expect(UpdateService.buildOf('<html>404</html>'), 0);
+    expect(UpdateService.buildOf('{}'), 0);
+    expect(UpdateService.newestManifest(['<html>404</html>', good]), good);
   });
 }

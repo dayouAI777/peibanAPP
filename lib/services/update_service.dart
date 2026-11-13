@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:http/http.dart' as http;
 import 'package:open_filex/open_filex.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -42,7 +42,8 @@ class UpdateCheckResult {
 ///
 /// 国内访问 GitHub 的三个域名时通时断，旧写法是「raw 超时 12 秒 → 再试 API 15 秒」，
 /// 慢的时候启动要空等近半分钟。这里改成：
-///   1) 三个源并发竞速，谁先回用谁（raw / jsDelivr CDN / GitHub API）；
+///   1) 三个源并发竞速（raw / jsDelivr CDN / GitHub API），第一个回来后再等 1.2 秒，
+///      收齐了就挑 build 最大的——谁先答不重要，谁新才重要（CDN 有缓存会吐旧清单）；
 ///   2) 成功一次就把清单缓存到本机，下次先拿缓存判断，再后台刷新；
 ///   3) 全部失败且缓存未过期时，用缓存结果照常提示升级，不因为网络抽风就「检查失败」。
 class UpdateService {
@@ -58,6 +59,9 @@ class UpdateService {
 
   /// 三源竞速的总时限。超过就认输，用缓存兜底。
   static const Duration raceTimeout = Duration(seconds: 10);
+
+  /// 第一个源回来后再等这么久，收其它源的答案。只加 1.2 秒，换来不认错版本。
+  static const Duration graceWindow = Duration(milliseconds: 1200);
 
   /// 缓存多久算新鲜：超过这个时间，网络又读不到，就不再拿旧清单说「有新版本」。
   static const Duration cacheTtl = Duration(days: 7);
@@ -110,16 +114,33 @@ class UpdateService {
   Future<String> _fetchVersionJson() {
     final completer = Completer<String>();
     final sources = <Future<String>>[_tryRaw(), _tryCdn(), _tryApi()];
+    final answers = <String>[];
     var failed = 0;
+    Timer? grace;
+
+    void done() {
+      if (completer.isCompleted || answers.isEmpty) return;
+      completer.complete(newestManifest(answers));
+    }
 
     for (final f in sources) {
       f.then(
         (v) {
-          if (!completer.isCompleted) completer.complete(v);
+          if (completer.isCompleted) return;
+          answers.add(v);
+          if (answers.length == sources.length) {
+            grace?.cancel();
+            done();
+            return;
+          }
+          // 第一个回来的先别急着用：CDN 可能还吐着上一版的清单，等一小会儿
+          grace ??= Timer(graceWindow, done);
         },
         onError: (Object _, StackTrace __) {
           failed++;
-          if (failed == sources.length && !completer.isCompleted) {
+          if (failed == sources.length &&
+              answers.isEmpty &&
+              !completer.isCompleted) {
             completer.completeError(Exception('三个源都没连上'));
           }
         },
@@ -127,6 +148,33 @@ class UpdateService {
     }
 
     return completer.future.timeout(raceTimeout);
+  }
+
+  /// 从多份清单里挑 build 最大的那份。解析不了的一律当 0 分。
+  @visibleForTesting
+  static String newestManifest(List<String> answers) {
+    var best = answers.first;
+    var bestBuild = buildOf(best);
+    for (final a in answers.skip(1)) {
+      final b = buildOf(a);
+      if (b > bestBuild) {
+        best = a;
+        bestBuild = b;
+      }
+    }
+    return best;
+  }
+
+  /// 取一份清单里的 build 号，坏数据返回 0。
+  @visibleForTesting
+  static int buildOf(String manifest) {
+    try {
+      final m = jsonDecode(manifest);
+      if (m is Map && m['build'] is num) return (m['build'] as num).toInt();
+    } catch (_) {
+      // 不是 JSON 就当没版本，排在最后
+    }
+    return 0;
   }
 
   /// 读清单：网络优先；[preferCache] 为真时只要缓存还新鲜就立刻返回（毫秒级）。
@@ -211,9 +259,6 @@ class UpdateService {
     }
   }
 
-  static const int _maxAttempts = 3;
-  static const Duration _connectTimeout = Duration(seconds: 15);
-
   /// 下载新版 APK。
   ///
   /// 真实链路是：先挑最快的镜像 → 支持 Range 就 8 路分段并发 → 失败退回单连接。
@@ -250,8 +295,11 @@ class UpdateService {
         s.contains('connection timeout') ||
         s.contains('SocketConnection timed out') ||
         s.contains('errno = 110')) {
-      return '连不上 GitHub 的下载服务器，自动重试 $_maxAttempts 次还是没通。'
+      return '连不上 GitHub 的下载服务器，自动重试 3 轮还是没通。'
           '切换一下网络（Wi-Fi ↔ 流量）再点一次通常就好了，版本不会丢。';
+    }
+    if (s.contains('所有下载源')) {
+      return '三个下载源都试过了，一个都没连上。过几分钟再点一次，或者换个网络。';
     }
     if (s.contains('receiveTimeout')) {
       return '下载中途断了（网速太慢）。换个网络再点一次，会重新下载。';
