@@ -16,10 +16,11 @@ import 'package:dio/dio.dart';
 class ApkDownloader {
   /// 镜像前缀。空串 = GitHub 直连（人在墙外时它最快，所以也参与竞速）。
   /// 这些是公共加速服务，可用性会变；探测失败会自动跳过，不会卡住下载。
+  /// 实测（2026-11-13）：直连不通、ghfast 250~570KB/s、ghproxy.net 时通时断。
   static const List<String> mirrors = <String>[
-    '',
     'https://ghfast.top/',
     'https://ghproxy.net/',
+    '',
   ];
 
   /// 最多几路并发。再多容易被镜像限速，收益反而下降。
@@ -88,15 +89,22 @@ class ApkDownloader {
     void Function(String status)? onStatus,
   }) async {
     onStatus?.call('正在挑最快的下载源…');
-    final results = await Future.wait(
-      mirrors.map((m) => _probe('$m$url', m)),
-    );
-    final usable = results.where((r) => r.bytes > 0).toList()
-      ..sort((a, b) => b.speed.compareTo(a.speed));
-    if (usable.isEmpty) {
-      throw Exception('所有下载源都连不上');
+
+    // 国内到 GitHub 及其镜像的 TLS 握手经常被中途掐断（实测三个源会同时失败），
+    // 所以这一层必须重试，不能让一次网络抖动把整个下载判死。
+    for (var round = 1; round <= 3; round++) {
+      final results = await Future.wait(
+        mirrors.map((m) => _probe('$m$url', m)),
+      );
+      final usable = results.where((r) => r.bytes > 0).toList()
+        ..sort((a, b) => b.speed.compareTo(a.speed));
+      if (usable.isNotEmpty) return usable.first;
+      if (round < 3) {
+        onStatus?.call('网络抖了一下，重新挑源（$round/3）…');
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
     }
-    return usable.first;
+    throw Exception('所有下载源都连不上');
   }
 
   static Future<_Pick> _probe(String url, String prefix) async {
@@ -126,27 +134,43 @@ class ApkDownloader {
   }
 
   /// 问一下文件多大。读不到就返回 null（退回单连接）。
+  ///
+  /// 先试 HEAD：多数镜像会老实给整包的 Content-Length。
+  /// 拿不到再发 1KB 的 Range 读 Content-Range——
+  /// 注意不能用 `bytes=0-0`：实测 ghfast 对单字节请求只回 Content-Length: 1，
+  /// 不带 Content-Range，会误判成「读不到大小」。
   static Future<int?> _probeSize(String url) async {
+    final dio = _client();
+
     try {
-      final dio = _client();
+      final r = await dio.head<void>(
+        url,
+        options: Options(headers: {'Accept-Ranges': 'bytes'}),
+      );
+      final len = int.tryParse(r.headers.value('content-length') ?? '');
+      if (len != null && len > 1024) return len;
+    } catch (_) {
+      // 有些镜像禁 HEAD，往下走
+    }
+
+    try {
       final r = await dio.get<ResponseBody>(
         url,
         options: Options(
           responseType: ResponseType.stream,
-          headers: {'Range': 'bytes=0-0'},
+          headers: {'Range': 'bytes=0-1023'},
         ),
       );
       final cr = r.headers.value('content-range');
       await r.data?.stream.listen((_) {}).cancel();
       if (cr != null && cr.contains('/')) {
         final total = int.tryParse(cr.split('/').last.trim());
-        if (total != null && total > 0) return total;
+        if (total != null && total > 1024) return total;
       }
-      final len = int.tryParse(r.headers.value('content-length') ?? '');
-      return (len != null && len > 1) ? len : null;
     } catch (_) {
-      return null;
+      // 读不到就退回单连接，至少还能下
     }
+    return null;
   }
 
   // ——— 分段并发 ———
