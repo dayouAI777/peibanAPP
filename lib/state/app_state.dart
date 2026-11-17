@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -23,6 +24,7 @@ import '../services/persona_analyst.dart';
 import '../services/proactive_service.dart';
 import '../services/speech_profile_service.dart';
 import '../services/user_manual.dart';
+import '../services/cloud_sync.dart';
 
 /// 一次请求要用到的「时间上下文」。
 ///
@@ -147,6 +149,38 @@ class AppState extends ChangeNotifier {
     await _loadMood();
 
     notifyListeners();
+
+    // 云同步：启动后只恢复开关/口令状态，**不自动拉取**——
+    // 设置页的手动「对齐云端」是唯一拉取入口。不 await：不能拖住首帧。
+    unawaited(CloudSync.instance.bootstrap());
+  }
+
+  /// 云同步对齐 / 恢复完成后，把内存态从数据库重刷一遍
+  /// （落库、说话方式画像的采用都由 CloudSync 完成，这里只负责读回来）。
+  Future<void> reloadFromDb() async {
+    try {
+      companion = await DbHelper.instance.firstCompanion();
+      messages = companion == null
+          ? []
+          : await DbHelper.instance
+              .messages(companion!.id!, limit: contextWindow);
+      chunks = companion == null
+          ? []
+          : await DbHelper.instance.memoryChunks(companion!.id!);
+      styleExamples = companion == null
+          ? []
+          : await DbHelper.instance.styleExamples(companion!.id!);
+      notes = await DbHelper.instance.userNotes();
+      try {
+        final raw = await Prefs.speechProfile();
+        speech = raw.isEmpty ? SpeechProfile.empty() : SpeechProfile.decode(raw);
+      } catch (_) {
+        speech = SpeechProfile.empty();
+      }
+      notifyListeners();
+    } catch (_) {
+      // 刷不出来就维持原状，不打扰聊天
+    }
   }
 
   // ——— 她的时间感 ———
@@ -502,6 +536,8 @@ class AppState extends ChangeNotifier {
         createdAt: DateTime.now().millisecondsSinceEpoch,
       );
       messages.add(botMsg.copyWith(id: await DbHelper.instance.insertMessage(botMsg)));
+      // 这轮对话成功了：排一个 5 分钟防抖的云备份（内部有开关/登录判断）
+      CloudSync.instance.scheduleUpload();
     } catch (e) {
       error = e.toString();
     } finally {
@@ -743,6 +779,7 @@ class AppState extends ChangeNotifier {
     // 记录清空了，气也该顺了——不然她还在为一件已经不存在的旧账冷战
     mood = const MoodState();
     await Prefs.setMood('');
+    // 云端只增不删：本地删除不影响云端历史。
     error = null;
     notifyListeners();
   }
@@ -762,6 +799,7 @@ class AppState extends ChangeNotifier {
     lifeEvent = null;
     await Prefs.setMood('');
     await Prefs.setLifeEvent('');
+    // 云端只增不删：删除角色后云端历史原样保留（重定稿后对齐即可找回）。
     error = null;
     notifyListeners();
   }

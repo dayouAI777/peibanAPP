@@ -53,6 +53,48 @@ class Prefs {
   static const _kMood = 'mood_state';
   static const _kMoodEnabled = 'mood_enabled';
 
+  // 记忆上云 V1：匿名登录 + 同步口令。云端路径按口令哈希分目录，
+  // 路径本身即凭证。口令明文存本机可接受（它只是同步凭证），
+  // 没有密码、没有账号，会话由 cloudbase SDK 自己持久化。
+  static const _kCloudPassphrase = 'cloud_passphrase';
+  static const _kCloudSync = 'cloud_sync';
+  static const _kCloudLastSyncAt = 'cloud_last_sync_at';
+
+  /// 同步口令（空 = 还没开启）。云端目录 = sha256('peiban-sync-v1:' + 口令)。
+  static Future<String> cloudPassphrase() async =>
+      (await SharedPreferences.getInstance()).getString(_kCloudPassphrase) ??
+      '';
+
+  static Future<void> setCloudPassphrase(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kCloudPassphrase, v);
+
+  /// 云同步开关：开了才会发完消息延迟推送、退后台补推。
+  /// 拉取没有自动入口——只有设置页的手动「对齐云端 / 从云端恢复」。
+  static Future<bool> cloudSync() async =>
+      (await SharedPreferences.getInstance()).getBool(_kCloudSync) ?? false;
+
+  static Future<void> setCloudSync(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_kCloudSync, v);
+
+  /// 最近一次成功上传/恢复的时间（毫秒）。
+  static Future<int> cloudLastSyncAt() async =>
+      (await SharedPreferences.getInstance()).getInt(_kCloudLastSyncAt) ?? 0;
+
+  static Future<void> setCloudLastSyncAt(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kCloudLastSyncAt, v);
+
+  /// 授权码：销毁云母库等高危操作的本地凭证。
+  /// 与同步口令是两个完全独立的东西（改口令不影响授权码，反之亦然）；
+  /// 只在 App 本机保存，**永不入云、永不进 journal/快照**。
+  static const _kCloudAuthCode = 'cloud_auth_code';
+
+  static Future<String> cloudAuthCode() async =>
+      (await SharedPreferences.getInstance()).getString(_kCloudAuthCode) ??
+      '';
+
+  static Future<void> setCloudAuthCode(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kCloudAuthCode, v);
+
   /// 最近一次成功拉到的 version.json 原文（秒开用）。
   static Future<String> cachedVersionJson() async =>
       (await SharedPreferences.getInstance()).getString(_kCachedVersionJson) ??

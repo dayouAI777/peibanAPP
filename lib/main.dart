@@ -10,6 +10,7 @@ import 'pages/manual_page.dart';
 import 'pages/persona_page.dart';
 import 'pages/settings_page.dart';
 import 'pages/style_examples_page.dart';
+import 'services/cloud_sync.dart';
 import 'services/proactive_service.dart';
 import 'services/silent_updater.dart';
 import 'state/app_state.dart';
@@ -40,6 +41,9 @@ Future<void> main() async {
   // 界面先出来，升级的事在后台慢慢做：查版本 → 下安装包 → 等用户点安装。
   // 不 await，不挡首帧，失败完全静默。
   SilentUpdater.instance.autoStart();
+
+  // 记忆上云：App 退到后台时立刻补推一次备份（内部有开关/登录判断，失败静默）。
+  WidgetsBinding.instance.addObserver(CloudSyncLifecycleObserver());
 }
 
 class PeiBanApp extends StatelessWidget {

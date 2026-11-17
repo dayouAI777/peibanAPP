@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/emoji_kit.dart';
 import '../data/prefs.dart';
+import '../services/cloud_sync.dart';
 import '../services/update_service.dart';
 import '../state/app_state.dart';
 import '../widgets/silent_update_banner.dart';
@@ -18,11 +19,16 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   final _key = TextEditingController();
+  final _passphraseCtl = TextEditingController();
   bool _obscure = true;
   bool _loaded = false;
   bool _saving = false;
   bool _testing = false;
   bool _checking = false;
+  bool _cloudBusy = false;
+  bool _cloudSyncOn = false;
+  bool _passphraseVisible = false;
+  bool _hasAuthCode = false;
 
   late ProactiveSettings _s;
   double _temperature = 0.8;
@@ -55,6 +61,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _autoUpdate = await Prefs.autoUpdateCheck();
     _silentUpdate = await Prefs.silentUpdateEnabled();
     _moodEnabled = await Prefs.moodEnabled();
+    _cloudSyncOn = await Prefs.cloudSync();
+    _hasAuthCode = (await Prefs.cloudAuthCode()).isNotEmpty;
     final v = await _updateService.localVersion();
     if (!mounted) return;
     setState(() {
@@ -66,6 +74,7 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void dispose() {
     _key.dispose();
+    _passphraseCtl.dispose();
     super.dispose();
   }
 
@@ -125,6 +134,430 @@ class _SettingsPageState extends State<SettingsPage> {
               ? '上次检查：发现新版 ${r.info!.version}'
               : '上次检查：已是最新版 ${r.local.version}+${r.local.build}');
     });
+  }
+
+  // ——— 云同步 ———
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// 开启同步：拿输入框里的口令调 setPassphrase（内含 ≥8 位校验 + 立即上传）。
+  Future<void> _cloudEnable() async {
+    setState(() => _cloudBusy = true);
+    final outcome = await CloudSync.instance.setPassphrase(_passphraseCtl.text);
+    if (!mounted) return;
+    setState(() => _cloudBusy = false);
+    // 弹窗/提示只说真实结果：ok 才清输入框、刷开关，失败原样保留让用户改
+    _snack(outcome.message);
+    if (outcome.ok) {
+      setState(() => _cloudSyncOn = CloudSync.instance.enabled);
+      _passphraseCtl.clear();
+    }
+  }
+
+  /// 修改口令 = 换云端目录。旧口令的备份留在云端，不删。
+  Future<void> _cloudChangePassphrase() async {
+    final ctl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('修改同步口令'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: ctl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                hintText: '新口令（至少 8 位）',
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              '改口令后，新口令的目录是空的，会立刻把本地记忆传一份过去；'
+              '旧口令的备份还在云端。请像记密码一样记住新口令。',
+              style: TextStyle(fontSize: 13, height: 1.6),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('再想想')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('确定修改')),
+        ],
+      ),
+    );
+    if (ok != true) {
+      ctl.dispose();
+      return;
+    }
+    setState(() => _cloudBusy = true);
+    final outcome = await CloudSync.instance.setPassphrase(ctl.text);
+    ctl.dispose();
+    if (!mounted) return;
+    setState(() => _cloudBusy = false);
+    // 提示文案来自 setPassphrase 的真实结果（没变/已更新/失败原因），不硬编码
+    _snack(outcome.message);
+  }
+
+  /// 关闭同步：云端不再变动，口令保留（重新打开不用重输），本机数据不受影响。
+  Future<void> _cloudDisable() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('关闭云同步？'),
+        content: const Text(
+            '云端备份保留不动，本机数据也不受影响，只是不再自动备份。'
+            '口令会记住，重新打开同步不用重输。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('再想想')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('关闭')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await CloudSync.instance.setEnabled(false);
+    if (!mounted) return;
+    setState(() => _cloudSyncOn = CloudSync.instance.enabled);
+    _snack('云同步已关闭');
+  }
+
+  /// 「对齐云端」：先推送（本地有、云端没有的追加到云端），再拉取（云端有、
+  /// 本地没有的补进本地）。完成后 snack 显示真实结果（真实条数或真实失败原因）。
+  Future<void> _cloudAlign() async {
+    setState(() => _cloudBusy = true);
+    final app = context.read<AppState>();
+    final r = await CloudSync.instance.align();
+    if (r.ok) {
+      await app.reloadFromDb();
+    }
+    if (!mounted) return;
+    setState(() => _cloudBusy = false);
+    _snack(r.message);
+  }
+
+  /// 从云端恢复：必须二次确认。合并规则是「只补缺」，本机数据一条不删。
+  Future<void> _cloudRestore() async {
+    final app = context.read<AppState>();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('从云端恢复？'),
+        content: const Text(
+            '会用云端备份把这台设备没有的资料补全到本机：聊天记录、行为手册、'
+            '说话范例、记忆摘要都会按「已有的不动、缺的才补」合并。\n\n'
+            '不会删除本地任何聊天记录，人设定稿也不会被覆盖。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('再想想')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('开始恢复')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _cloudBusy = true);
+    final r = await CloudSync.instance.pullOnly();
+    if (r.ok) {
+      await app.reloadFromDb();
+    }
+    if (!mounted) return;
+    setState(() => _cloudBusy = false);
+    _snack(r.message);
+  }
+
+  /// 授权码设置入口：未设置时可设置（输入两次确认），已设置可修改（先输旧码）。
+  Future<void> _cloudAuthCode() async {
+    final hasOld = _hasAuthCode;
+    final oldCtl = TextEditingController();
+    final newCtl = TextEditingController();
+    final confirmCtl = TextEditingController();
+    String? err;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) => AlertDialog(
+          title: Text(hasOld ? '修改授权码' : '设置授权码'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (hasOld) ...[
+                TextField(
+                  controller: oldCtl,
+                  obscureText: true,
+                  decoration: const InputDecoration(hintText: '旧授权码'),
+                ),
+                const SizedBox(height: 12),
+              ],
+              TextField(
+                controller: newCtl,
+                obscureText: true,
+                decoration:
+                    const InputDecoration(hintText: '新授权码（至少 8 位）'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: confirmCtl,
+                obscureText: true,
+                decoration: const InputDecoration(hintText: '再输一遍新授权码'),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '授权码用于销毁云母库等高危操作，与同步口令相互独立，'
+                '只在 App 本机保存，不上云、不进任何备份文件。',
+                style: TextStyle(fontSize: 13, height: 1.6),
+              ),
+              if (err != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(err!,
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(dialogCtx).colorScheme.error)),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, false),
+                child: const Text('再想想')),
+            FilledButton(
+              onPressed: () {
+                final v = newCtl.text.trim();
+                if (v != confirmCtl.text.trim()) {
+                  setDialogState(() => err = '两次输入的新授权码不一致');
+                  return;
+                }
+                Navigator.pop(dialogCtx, true);
+              },
+              child: Text(hasOld ? '确定修改' : '确定设置'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) {
+      oldCtl.dispose();
+      newCtl.dispose();
+      confirmCtl.dispose();
+      return;
+    }
+    setState(() => _cloudBusy = true);
+    final outcome = hasOld
+        ? await CloudSync.instance.changeAuthCode(oldCtl.text, newCtl.text)
+        : await CloudSync.instance.setAuthCode(newCtl.text);
+    oldCtl.dispose();
+    newCtl.dispose();
+    confirmCtl.dispose();
+    if (!mounted) return;
+    setState(() {
+      _cloudBusy = false;
+      if (outcome.ok) _hasAuthCode = true;
+    });
+    _snack(outcome.message);
+  }
+
+  /// 「销毁云母库」：输入授权码 → 危险确认弹窗 → 本地验证授权码 →
+  /// 空 journal 覆盖上传 → 自动把本地当前记忆重新对齐上传。
+  Future<void> _cloudDestroy() async {
+    final ctl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('销毁云母库'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '这是高危操作：云端记忆将全部清除且不可找回。'
+              '继续前请输入授权码确认身份。',
+              style: TextStyle(fontSize: 13, height: 1.6),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctl,
+              obscureText: true,
+              decoration: const InputDecoration(hintText: '授权码'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('再想想')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('继续')),
+        ],
+      ),
+    );
+    if (ok != true) {
+      ctl.dispose();
+      return;
+    }
+    if (!mounted) {
+      ctl.dispose();
+      return;
+    }
+    final ok2 = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('确认销毁云母库？'),
+        content: const Text(
+            '云端记忆将全部清除，且不可找回。\n\n'
+            '本地数据不受影响；销毁完成后会自动把本地当前记忆重新对齐上传。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('再想想')),
+          FilledButton(
+            style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('彻底销毁'),
+          ),
+        ],
+      ),
+    );
+    if (ok2 != true) {
+      ctl.dispose();
+      return;
+    }
+    setState(() => _cloudBusy = true);
+    final r = await CloudSync.instance.destroyCloud(ctl.text);
+    ctl.dispose();
+    if (!mounted) return;
+    setState(() => _cloudBusy = false);
+    _snack(r.message);
+  }
+
+  /// 删除重建：本地必删；可选同时销毁云端记忆（需授权码，本地删除成功后才执行）。
+  Future<void> _deleteCompanion() async {
+    bool destroy = false;
+    final authCtl = TextEditingController();
+    String? err;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(
+        builder: (dialogCtx, setDialogState) => AlertDialog(
+          title: const Text('删除这个人，重新定？'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                  '人设定稿后不能改，删除是唯一重来的办法。所有本地记录会清空，无法恢复。'),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: destroy,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: const Text('同时销毁云端记忆（需输入授权码）'),
+                subtitle: const Text('不勾选则云端仍保留旧记忆'),
+                onChanged: (v) => setDialogState(() => destroy = v ?? false),
+              ),
+              if (destroy) ...[
+                TextField(
+                  controller: authCtl,
+                  obscureText: true,
+                  decoration: const InputDecoration(hintText: '授权码'),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (err != null)
+                Text(err!,
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(dialogCtx).colorScheme.error)),
+            ],
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(dialogCtx, false),
+                child: const Text('再想想')),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(dialogCtx).colorScheme.error),
+              onPressed: () {
+                if (destroy && authCtl.text.trim().isEmpty) {
+                  setDialogState(() => err = '勾选了销毁云端，请输入授权码');
+                  return;
+                }
+                Navigator.pop(dialogCtx, true);
+              },
+              child: const Text('确定删除'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) {
+      authCtl.dispose();
+      return;
+    }
+    if (!mounted) {
+      authCtl.dispose();
+      return;
+    }
+    // 先拿引用：删除后会导航走，本页 context 会失效
+    final app = context.read<AppState>();
+    final nav = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _cloudBusy = true);
+    // 本地先删；本地失败不碰云端
+    var localDeleted = false;
+    try {
+      await app.deleteCompanion();
+      localDeleted = true;
+    } catch (_) {
+      localDeleted = false;
+    }
+    if (!localDeleted) {
+      authCtl.dispose();
+      if (!mounted) return;
+      setState(() => _cloudBusy = false);
+      _snack('本地删除失败，云端未做任何改动');
+      return;
+    }
+    String msg;
+    if (destroy) {
+      final r = await CloudSync.instance.destroyCloud(authCtl.text);
+      msg = r.ok
+          ? '本地已删除，云端记忆已销毁'
+          : '本地已删除，但云端销毁失败：${r.message}（云端仍保留旧记忆，'
+              '可在云同步中授权销毁）';
+    } else {
+      msg = '本地已删除。云端仍保留旧记忆，可在云同步中授权销毁';
+    }
+    authCtl.dispose();
+    if (!mounted) return;
+    setState(() => _cloudBusy = false);
+    messenger.showSnackBar(SnackBar(content: Text(msg)));
+    nav.pushNamedAndRemoveUntil('/persona', (route) => false);
+  }
+
+  String _fmtTime(int ms) {
+    if (ms <= 0) return '还没同步过';
+    final t = DateTime.fromMillisecondsSinceEpoch(ms);
+    final mm = t.month.toString().padLeft(2, '0');
+    final dd = t.day.toString().padLeft(2, '0');
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mi = t.minute.toString().padLeft(2, '0');
+    return '${t.year}-$mm-$dd $hh:$mi';
   }
 
   Future<void> _confirm(
@@ -258,6 +691,173 @@ class _SettingsPageState extends State<SettingsPage> {
             'Key 只存在这台手机上。把 APK 发给朋友时，对方填自己的 Key。',
             style: theme.textTheme.bodySmall
                 ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+          ),
+          const Divider(height: 28),
+
+          // ——— 云同步 ———
+          Text('云同步', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          ListenableBuilder(
+            listenable: CloudSync.instance,
+            builder: (context, _) {
+              final cloud = CloudSync.instance;
+              final active = _cloudSyncOn && cloud.hasPassphrase;
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _cloudSyncOn,
+                    title: const Text('开启云同步'),
+                    subtitle: const Text(
+                        '聊天记忆备份到云端你自己的口令目录下；关掉后云端不再变动，本机数据不受影响'),
+                    onChanged: (v) async {
+                      await cloud.setEnabled(v);
+                      if (!mounted) return;
+                      setState(() => _cloudSyncOn = v);
+                    },
+                  ),
+                  if (active) ...[
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.cloud_done_outlined),
+                      title: const Text('已开启同步'),
+                      subtitle:
+                          Text('最后同步：${_fmtTime(cloud.lastSyncAt)}'),
+                    ),
+                    if (cloud.status == SyncStatus.syncing)
+                      const Padding(
+                        padding: EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                                width: 14,
+                                height: 14,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2)),
+                            SizedBox(width: 10),
+                            Text('正在同步…'),
+                          ],
+                        ),
+                      ),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _cloudBusy ? null : _cloudAlign,
+                            icon: const Icon(Icons.sync_outlined, size: 18),
+                            label: const Text('对齐云端'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _cloudBusy ? null : _cloudRestore,
+                            icon: const Icon(Icons.restore_outlined, size: 18),
+                            label: const Text('从云端恢复'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _cloudBusy ? null : _cloudChangePassphrase,
+                            icon: const Icon(Icons.key_outlined, size: 18),
+                            label: const Text('修改口令'),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _cloudBusy ? null : _cloudDisable,
+                            icon: const Icon(Icons.cloud_off_outlined, size: 18),
+                            label: const Text('关闭同步'),
+                          ),
+                        ),
+                      ],
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.verified_user_outlined),
+                      title: Text('授权码（${_hasAuthCode ? '已设置' : '未设置'}）'),
+                      subtitle: const Text(
+                          '授权码用于销毁云母库等高危操作，只在 App 本机保存'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: _cloudBusy ? null : _cloudAuthCode,
+                    ),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: theme.colorScheme.error,
+                          side: BorderSide(color: theme.colorScheme.error),
+                          minimumSize: const Size.fromHeight(44),
+                        ),
+                        onPressed: _cloudBusy ? null : _cloudDestroy,
+                        icon: const Icon(Icons.local_fire_department_outlined,
+                            size: 18),
+                        label: const Text('销毁云母库'),
+                      ),
+                    ),
+                    Text(
+                      '云端记忆库只增不删：本地删除不影响云端历史；'
+                      '「对齐云端」会先把本地缺的补上去、再把云端缺的补回来，'
+                      '两边对齐后一致。发消息成功后 5 分钟也会自动推送一次，'
+                      'App 退到后台时同样补推。恢复只补缺、不删除本机任何记录。'
+                      '销毁云母库是唯一清空云端的入口，需要授权码确认。',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+                    ),
+                  ] else ...[
+                    TextField(
+                      controller: _passphraseCtl,
+                      enabled: !_cloudBusy,
+                      obscureText: !_passphraseVisible,
+                      decoration: InputDecoration(
+                        hintText: '设置同步口令（至少 8 位）',
+                        prefixIcon: const Icon(Icons.key, size: 20),
+                        suffixIcon: IconButton(
+                          icon: Icon(_passphraseVisible
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined),
+                          onPressed: () => setState(
+                              () => _passphraseVisible = !_passphraseVisible),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    FilledButton.icon(
+                      onPressed: _cloudBusy ? null : _cloudEnable,
+                      icon: const Icon(Icons.cloud_upload_outlined, size: 18),
+                      label: Text(_cloudBusy ? '正在开启…' : '开启同步'),
+                      style: FilledButton.styleFrom(
+                          minimumSize: const Size.fromHeight(48)),
+                    ),
+                    if (cloud.lastError != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text(
+                          cloud.lastError!,
+                          style: TextStyle(
+                              fontSize: 13, color: theme.colorScheme.error),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '口令是你云端记忆的唯一凭证。换手机或重装 App 后，输入同一个口令'
+                      '再点「对齐云端」就能找回云端记忆。云端记忆库只增不删，'
+                      '本地删除不影响云端历史。口令忘了云端就找不回'
+                      '（手机本地记录不受影响），请像记密码一样记住它。',
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+                    ),
+                  ],
+                ],
+              );
+            },
           ),
           const Divider(height: 28),
 
@@ -471,18 +1071,8 @@ class _SettingsPageState extends State<SettingsPage> {
                 color: theme.colorScheme.error),
             title:
                 Text('删除重建', style: TextStyle(color: theme.colorScheme.error)),
-            subtitle: const Text('人设、聊天、摘要、行为手册一起清空，配置保留'),
-            onTap: () => _confirm(
-              '删除这个人，重新定？',
-              '人设定稿后不能改，删除是唯一重来的办法。所有记录会清空，无法恢复。',
-              () async {
-                final app = context.read<AppState>();
-                final nav = Navigator.of(context);
-                await app.deleteCompanion();
-                if (!mounted) return;
-                nav.pushNamedAndRemoveUntil('/persona', (route) => false);
-              },
-            ),
+            subtitle: const Text('人设、聊天、摘要、行为手册一起清空，配置保留；可选同时销毁云端记忆'),
+            onTap: _deleteCompanion,
           ),
           const SizedBox(height: 24),
         ],
