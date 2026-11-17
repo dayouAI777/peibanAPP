@@ -141,9 +141,10 @@ void main() {
       expect(c, isNot(journalKeyForMemoryChunk(2, 60, '聊了搬家')));
     });
 
-    test('speech_profile / persona 是固定 key（整对象一条）', () {
+    test('speech_profile / persona / style_profile 是固定 key（整对象一条）', () {
       expect(journalKeySpeechProfile, 'sp:v1');
       expect(journalKeyPersona, 'persona:v1');
+      expect(journalKeyStyleProfile, 'stp:v1');
     });
   });
 
@@ -240,6 +241,57 @@ void main() {
       final fresh = [l1].where((l) => !keys.contains(l.key)).toList();
       final second = mergeJournal(first, fresh);
       expect(second, first, reason: '相同 key 重复追加合并，文件应逐字节不变');
+    });
+  });
+
+  group('journal style_profile 类型（她的说话方式档案）', () {
+    JournalLine profileLine(int ts, int digested) => JournalLine(
+          type: JournalLine.typeStyleProfile,
+          key: journalKeyStyleProfile,
+          ts: ts,
+          data: {
+            'digested': digested,
+            'updated_at': ts,
+            'tone': '随性偏糙',
+            'catchphrases': <String>['哈？'],
+            'taboos': '不连发长段',
+          },
+        );
+
+    test('类型注册：knownTypes 认识 style_profile，isSingleWinner 成立', () {
+      expect(JournalLine.knownTypes, contains(JournalLine.typeStyleProfile));
+      final l = profileLine(1, 5);
+      expect(l.isSingleWinner, isTrue);
+    });
+
+    test('encode → parse 往返：档案整对象字段原样回来', () {
+      final back = parseJournalLines('${profileLine(1700000009000, 29).encode()}\n');
+      expect(back.length, 1);
+      expect(back.first.type, JournalLine.typeStyleProfile);
+      expect(back.first.key, 'stp:v1');
+      expect(back.first.data['digested'], 29);
+      expect(back.first.data['tone'], '随性偏糙');
+      expect(back.first.data['catchphrases'], <String>['哈？']);
+      expect(back.first.data['taboos'], '不连发长段');
+    });
+
+    test('同 key 多行取 ts 最大的一行（档案更新后旧行不再生效）', () {
+      final eff = resolveEffectiveLines(
+          [profileLine(100, 10), profileLine(300, 29), profileLine(200, 20)]);
+      expect(eff.length, 1);
+      expect(eff.first.ts, 300);
+      expect(eff.first.data['digested'], 29);
+    });
+
+    test('坏行净化对 style_profile 同样生效：data 非对象 / 空 key 跳过，好行保留', () {
+      final raw = [
+        '{"v":1,"type":"style_profile","key":"","ts":1,"data":{}}', // 空 key
+        '{"v":1,"type":"style_profile","key":"stp:v1","ts":1,"data":"不是对象"}',
+        profileLine(9, 29).encode(), // 好行
+      ].join('\n');
+      final back = parseJournalLines(raw);
+      expect(back.length, 1);
+      expect(back.first.data['digested'], 29);
     });
   });
 }

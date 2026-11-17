@@ -189,6 +189,16 @@ class Prefs {
   static Future<void> setSpeechProfile(String v) async =>
       (await SharedPreferences.getInstance()).setString(_kSpeechProfile, v);
 
+  /// 她的说话方式档案（JSON，机器蒸馏产物，不让手改）。全局一份：
+  /// 当前项目常态单角色，与 speech_profile 同口径；将来支持多角色再拆 key。
+  static const _kStyleProfile = 'style_profile';
+
+  static Future<String> styleProfile() async =>
+      (await SharedPreferences.getInstance()).getString(_kStyleProfile) ?? '';
+
+  static Future<void> setStyleProfile(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kStyleProfile, v);
+
   static Future<String> apiKey() async =>
       (await SharedPreferences.getInstance()).getString(_kApiKey) ?? '';
 

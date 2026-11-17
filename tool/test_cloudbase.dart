@@ -64,7 +64,7 @@ List<String> seedLines() => [
       ),
     ];
 
-/// 追加用的 2 行（新 key，与初始 3 行不重）。
+/// 追加用的 3 行（新 key / 新类型，与初始 3 行不重）。
 List<JournalLine> appendLines() => [
       JournalLine(
         type: JournalLine.typeStyleExample,
@@ -86,6 +86,19 @@ List<JournalLine> appendLines() => [
           'to_id': 50,
           'summary': '聊了搬家的事',
           'created_at': 1700000005000,
+        },
+      ),
+      // 她的说话方式档案：整对象一条（key 固定 stp:v1），验证新类型真实云端往返
+      JournalLine(
+        type: JournalLine.typeStyleProfile,
+        key: journalKeyStyleProfile,
+        ts: 1700000006000,
+        data: const {
+          'digested': 12,
+          'updated_at': 1700000006000,
+          'tone': '随性偏糙，像熟人',
+          'catchphrases': <String>['哈？'],
+          'taboos': '不连发长段',
         },
       ),
     ];
@@ -178,18 +191,18 @@ void main() {
     }
     log('行数与逐行内容比对一致 ✅');
 
-    // ——— 4. 追加写：下载 → 追加 2 行新 key → 上传 → 再下载 ———
-    log('— 4. 追加写（2 行新 key）—');
+    // ——— 4. 追加写：下载 → 追加 3 行新 key → 上传 → 再下载 ———
+    log('— 4. 追加写（3 行新 key，含 style_profile 新类型）—');
     final rawBefore = back3;
     final appended = appendLines();
     final merged = appendMerge(rawBefore, appended);
-    expect(merged.split('\n').where((l) => l.trim().isNotEmpty).length, 5,
-        reason: '合并后应是 5 行');
+    expect(merged.split('\n').where((l) => l.trim().isNotEmpty).length, 6,
+        reason: '合并后应是 6 行');
     await uploadJournal(app, path, merged);
     final back5 = await downloadJournal(app, path);
     final lines5 = parseJournalLines(back5);
     log('追加后下载 ${lines5.length} 行');
-    expect(lines5.length, 5, reason: '追加后应有 5 行全在');
+    expect(lines5.length, 6, reason: '追加后应有 6 行全在');
     // 原有 3 行未被改动：追加后文件的前 3 行必须与追加前完全一致（字节级）
     final back5Lines =
         back5.split('\n').where((l) => l.trim().isNotEmpty).toList();
@@ -203,7 +216,7 @@ void main() {
     final keys5 = lines5.map((l) => l.key).toSet();
     expect(keys5.containsAll(appended.map((a) => a.key)), isTrue,
         reason: '追加的 2 行新 key 必须都在云端');
-    log('5 行全在，原有 3 行逐字节未被改动 ✅（追加不覆盖语义成立）');
+    log('6 行全在，原有 3 行逐字节未被改动 ✅（追加不覆盖语义成立）');
 
     // ——— 5. 幂等验证：相同 key 再走一遍追加合并 ———
     log('— 5. 幂等验证（相同 key 重复追加）—');
@@ -214,9 +227,15 @@ void main() {
     final linesFinal = parseJournalLines(backFinal);
     final uniqueKeys = linesFinal.map((l) => l.key).toSet();
     log('重复追加后下载 ${linesFinal.length} 行，去重 key 数 ${uniqueKeys.length}');
-    expect(linesFinal.length, 5, reason: '重复追加后仍应只有 5 行');
+    expect(linesFinal.length, 6, reason: '重复追加后仍应只有 6 行');
     expect(uniqueKeys.length, linesFinal.length, reason: '不应出现重复 key');
-    log('仍 5 行、无重复 key ✅（幂等 + 自愈基础成立）');
+    // style_profile 整对象行的内容往返校验
+    final stp = linesFinal
+        .firstWhere((l) => l.type == JournalLine.typeStyleProfile);
+    expect(stp.key, journalKeyStyleProfile);
+    expect(stp.data['digested'], 12);
+    expect(stp.data['taboos'], '不连发长段');
+    log('仍 6 行、无重复 key、style_profile 往返一致 ✅（幂等 + 自愈基础成立）');
 
     // ——— 6. 销毁语义：空 journal 覆盖上传 → 下载验证为空（全协议唯一覆盖点）———
     log('— 6. 销毁语义（空 journal 整文件覆盖）—');

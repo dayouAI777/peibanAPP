@@ -13,6 +13,7 @@ import '../models/message.dart';
 import '../models/persona_space.dart';
 import '../models/speech_profile.dart';
 import '../models/style_example.dart';
+import '../models/style_profile.dart';
 import '../models/user_note.dart';
 import '../services/chat_images.dart';
 import '../services/clock_service.dart';
@@ -23,6 +24,7 @@ import '../services/mood_service.dart';
 import '../services/persona_analyst.dart';
 import '../services/proactive_service.dart';
 import '../services/speech_profile_service.dart';
+import '../services/style_profile_service.dart';
 import '../services/user_manual.dart';
 import '../services/cloud_sync.dart';
 
@@ -97,14 +99,22 @@ class AppState extends ChangeNotifier {
   final UserManualService _manual = UserManualService();
   final SpeechProfileService _speechService = SpeechProfileService();
 
+  /// 「她的说话方式档案」蒸馏器（全部范例 → 一份稳定档案，增量合并）。
+  final StyleProfileService _styleDistiller = StyleProfileService();
+
   Companion? companion;
   List<ChatMessage> messages = [];
   List<UserNote> notes = [];
   List<MemoryChunk> chunks = [];
 
   /// 用户亲手改过的「她该这么说」范例，直接进 system prompt。
+  /// **全量**（不分页、不限 40 条）：prompt 只取最新 12 条，但蒸馏层
+  /// 要按 digested 计数切「新增 / 已消化」两段，必须拿到完整列表。
   List<StyleExample> styleExamples = [];
   SpeechProfile speech = SpeechProfile.empty();
+
+  /// 她的说话方式档案（style_examples 的长期蒸馏结果，机器产物）。
+  StyleProfile styleProfile = StyleProfile.empty();
   ChatBackground chatBg = ChatBackground.initial;
 
   /// 她这几天的临时安排（旅行 / 加班 / 聚会 / 生病），过期自动失效。
@@ -122,6 +132,10 @@ class AppState extends ChangeNotifier {
   int _userMessageCount = 0;
   bool _maintaining = false;
 
+  /// 说话方式档案的蒸馏防抖与重入保护。
+  Timer? _styleDistillTimer;
+  bool _distillingStyle = false;
+
   Future<void> load() async {
     configured = await Prefs.configured();
     contextWindow = await Prefs.contextLimit();
@@ -135,13 +149,19 @@ class AppState extends ChangeNotifier {
         : await DbHelper.instance.memoryChunks(companion!.id!);
     styleExamples = companion == null
         ? []
-        : await DbHelper.instance.styleExamples(companion!.id!);
+        : await DbHelper.instance.exportAllStyleExamples(companion!.id!);
     notes = await DbHelper.instance.userNotes();
     try {
       final raw = await Prefs.speechProfile();
       if (raw.isNotEmpty) speech = SpeechProfile.decode(raw);
     } catch (_) {
       speech = SpeechProfile.empty();
+    }
+    try {
+      final raw = await Prefs.styleProfile();
+      if (raw.isNotEmpty) styleProfile = StyleProfile.decode(raw);
+    } catch (_) {
+      styleProfile = StyleProfile.empty();
     }
 
     moodEnabled = await Prefs.moodEnabled();
@@ -153,6 +173,11 @@ class AppState extends ChangeNotifier {
     // 云同步：启动后只恢复开关/口令状态，**不自动拉取**——
     // 设置页的手动「对齐云端」是唯一拉取入口。不 await：不能拖住首帧。
     unawaited(CloudSync.instance.bootstrap());
+
+    // 冷启动补漏：范例总数落后 digested ≥ 阈值（比如老用户攒了 29 条范例
+    // 还没蒸馏过）→ 启动一分钟后补一轮蒸馏。同步方法内部排防抖 Timer，
+    // 失败静默、不阻塞首帧。
+    _maybeDistillStyle(coldStart: true);
   }
 
   /// 云同步对齐 / 恢复完成后，把内存态从数据库重刷一遍
@@ -169,13 +194,20 @@ class AppState extends ChangeNotifier {
           : await DbHelper.instance.memoryChunks(companion!.id!);
       styleExamples = companion == null
           ? []
-          : await DbHelper.instance.styleExamples(companion!.id!);
+          : await DbHelper.instance.exportAllStyleExamples(companion!.id!);
       notes = await DbHelper.instance.userNotes();
       try {
         final raw = await Prefs.speechProfile();
         speech = raw.isEmpty ? SpeechProfile.empty() : SpeechProfile.decode(raw);
       } catch (_) {
         speech = SpeechProfile.empty();
+      }
+      try {
+        final raw = await Prefs.styleProfile();
+        styleProfile =
+            raw.isEmpty ? StyleProfile.empty() : StyleProfile.decode(raw);
+      } catch (_) {
+        styleProfile = StyleProfile.empty();
       }
       notifyListeners();
     } catch (_) {
@@ -375,6 +407,9 @@ class AppState extends ChangeNotifier {
     chunks = [];
     notes = [];
     styleExamples = [];
+    // 范例清空了，蒸馏档案一并重置：旧人设的说话习惯不能带进新人设
+    styleProfile = StyleProfile.empty();
+    await Prefs.setStyleProfile('');
     _userMessageCount = 0;
     mood = const MoodState();
     await Prefs.setMood('');
@@ -417,6 +452,7 @@ class AppState extends ChangeNotifier {
         speech: speech,
         appearance: _appearanceOf(c),
         styleExamples: styleExamples,
+        styleProfile: styleProfile,
         nowBlock: timing.nowBlock,
         gapBlock: timing.gapBlock,
         moodBlock: moodBlock,
@@ -697,7 +733,8 @@ class AppState extends ChangeNotifier {
         preferred: text,
         createdAt: DateTime.now().millisecondsSinceEpoch,
       ));
-      styleExamples = await DbHelper.instance.styleExamples(c.id!);
+      styleExamples =
+          await DbHelper.instance.exportAllStyleExamples(c.id!);
       saved = true;
     }
 
@@ -710,6 +747,9 @@ class AppState extends ChangeNotifier {
       }
     }
     notifyListeners();
+
+    // 新范例真正存下来了才查蒸馏触发（防抖 5 分钟，失败静默，不阻塞聊天）
+    if (saved) _maybeDistillStyle();
     return CorrectOutcome(
       result: saved ? CorrectResult.saved : CorrectResult.duplicate,
       replaced: replaced,
@@ -720,9 +760,89 @@ class AppState extends ChangeNotifier {
   Future<void> deleteStyleExample(int id) async {
     await DbHelper.instance.deleteStyleExample(id);
     if (companion != null) {
-      styleExamples = await DbHelper.instance.styleExamples(companion!.id!);
+      styleExamples =
+          await DbHelper.instance.exportAllStyleExamples(companion!.id!);
     }
     notifyListeners();
+  }
+
+  // ——— 她的说话方式档案（蒸馏层） ———
+
+  /// 检查是否需要蒸馏她的说话方式档案：
+  /// digested 落后范例总数 ≥ [StyleProfileService.triggerThreshold] 条才触发，
+  /// 再加一层防抖——连续手改几条只蒸最后一次。
+  /// [coldStart] 为真（App 冷启动补漏）用更短的延迟，避开首帧。
+  void _maybeDistillStyle({bool coldStart = false}) {
+    if (_distillingStyle || companion == null) return;
+    if (!StyleProfileService.shouldDistill(
+      digested: styleProfile.digested,
+      total: styleExamples.length,
+    )) {
+      return;
+    }
+    _styleDistillTimer?.cancel();
+    _styleDistillTimer = Timer(
+      coldStart
+          ? StyleProfileService.coldStartDelay
+          : StyleProfileService.debounce,
+      () => unawaited(_runStyleDistill()),
+    );
+  }
+
+  /// 真正跑一轮蒸馏。条件不满足 / 失败一律静默、状态不变，绝不阻塞聊天；
+  /// 蒸馏期间新进来的范例不消化，digested 只记本轮实际消化数，下一轮再合。
+  Future<void> _runStyleDistill() async {
+    final c = companion;
+    if (c == null || _distillingStyle) return;
+    if (!StyleProfileService.shouldDistill(
+      digested: styleProfile.digested,
+      total: styleExamples.length,
+    )) {
+      return;
+    }
+    _distillingStyle = true;
+    try {
+      final key = await Prefs.apiKey();
+      if (key.trim().isEmpty) return;
+
+      // 范例表是用户手工调教成果，可能被单条删除，digested（计数）
+      // 先钳进当前列表范围再切段：已消化段 = 抽样来源，剩余段 = 本轮新料
+      final safeDigested =
+          styleProfile.digested.clamp(0, styleExamples.length);
+      final oldPool = styleExamples.sublist(0, safeDigested);
+      final pending = styleExamples.sublist(safeDigested);
+      if (pending.isEmpty) return;
+      final newBatch =
+          pending.length > StyleProfileService.maxNewExamplesPerRound
+              ? pending.sublist(0, StyleProfileService.maxNewExamplesPerRound)
+              : pending;
+      final sampleStart = oldPool.length > StyleProfileService.sampleOldCount
+          ? oldPool.length - StyleProfileService.sampleOldCount
+          : 0;
+      final sampleOld = oldPool.sublist(sampleStart);
+
+      final distilled = await _styleDistiller.distill(
+        apiKey: key,
+        current: styleProfile,
+        newExamples: newBatch,
+        sampleOld: sampleOld,
+        totalExamples: styleExamples.length,
+      );
+      // 失败时 distill 原样返回 current（updatedAt/digested 都没变）；
+      // 有变化才算真蒸馏成功
+      if (distilled.updatedAt != styleProfile.updatedAt ||
+          distilled.digested != styleProfile.digested) {
+        styleProfile = distilled;
+        await Prefs.setStyleProfile(distilled.encode());
+        // 档案内容变了：排一次云备份（内部有开关/口令判断，关着就是空操作）
+        CloudSync.instance.scheduleUpload();
+        notifyListeners();
+      }
+    } catch (_) {
+      // 蒸馏失败静默：状态不变，下一轮重试
+    } finally {
+      _distillingStyle = false;
+    }
   }
 
   // ——— 设置 / 数据管理 ———
@@ -794,6 +914,9 @@ class AppState extends ChangeNotifier {
     chunks = [];
     notes = [];
     styleExamples = [];
+    // 范例全删，档案失去依据，一并清掉（云端只增不删：云端历史原样保留）
+    styleProfile = StyleProfile.empty();
+    await Prefs.setStyleProfile('');
     _userMessageCount = 0;
     mood = const MoodState();
     lifeEvent = null;

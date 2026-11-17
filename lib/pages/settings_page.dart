@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../data/emoji_kit.dart';
 import '../data/prefs.dart';
+import '../models/style_profile.dart';
 import '../services/cloud_sync.dart';
 import '../services/update_service.dart';
 import '../state/app_state.dart';
@@ -560,6 +561,17 @@ class _SettingsPageState extends State<SettingsPage> {
     return '${t.year}-$mm-$dd $hh:$mi';
   }
 
+  /// 她的说话方式档案的状态行文案（只读展示，不做编辑入口）。
+  String _styleProfileStatus(StyleProfile p) {
+    if (p.isEmpty) return '还没有档案；攒够几条修改后会自动蒸馏一份，不用管它';
+    final t = DateTime.fromMillisecondsSinceEpoch(p.updatedAt);
+    final mm = t.month.toString().padLeft(2, '0');
+    final dd = t.day.toString().padLeft(2, '0');
+    final hh = t.hour.toString().padLeft(2, '0');
+    final mi = t.minute.toString().padLeft(2, '0');
+    return '已消化 ${p.digested} 条范例 · ${t.year}-$mm-$dd $hh:$mi 更新';
+  }
+
   Future<void> _confirm(
       String title, String body, Future<void> Function() run) async {
     final ok = await showDialog<bool>(
@@ -883,6 +895,15 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.pushNamed(context, '/style-examples'),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.record_voice_over_rounded),
+            title: const Text('她的说话方式档案'),
+            subtitle: Text(_styleProfileStatus(
+                context.watch<AppState>().styleProfile)),
+            // 只读状态行：档案是机器蒸馏产物，不做编辑入口
+            // （与「人设定稿不改」同一精神），攒够修改自动更新。
           ),
           const Divider(height: 24),
           Text('TA 用表情：${EmojiKit.labelOf(_emojiLevel)}'),

@@ -25,6 +25,8 @@ import 'package:crypto/crypto.dart';
 /// - style_example：`s:` + sha256(original+'|'+preferred) 前 16 位 hex
 /// - memory_chunk：`c:` + sha256(fromId+'|'+toId+'|'+summary) 前 16 位 hex
 /// - speech_profile：固定 `sp:v1`（整对象一条，读者取该 type 的最新 ts 那行）
+/// - style_profile：固定 `stp:v1`（同上；「她的说话方式档案」，手机是唯一
+///   蒸馏写入方，电脑 Agent 端只读）
 /// - persona：固定 `persona:v1`（同上）
 class JournalLine {
   /// 协议版本。读取方只认自己支持的版本，未来版本留给未来的读者。
@@ -36,6 +38,7 @@ class JournalLine {
   static const String typeStyleExample = 'style_example';
   static const String typeMemoryChunk = 'memory_chunk';
   static const String typeSpeechProfile = 'speech_profile';
+  static const String typeStyleProfile = 'style_profile';
   static const String typePersona = 'persona';
 
   /// 本协议认识的全部类型。类型不认识（未来版本写入的）→ 解析时跳过该行。
@@ -45,13 +48,16 @@ class JournalLine {
     typeStyleExample,
     typeMemoryChunk,
     typeSpeechProfile,
+    typeStyleProfile,
     typePersona,
   };
 
-  /// speech_profile / persona 是「整对象一条」：key 固定，读者取同 key 中
-  /// ts 最大的一行生效。
+  /// speech_profile / style_profile / persona 是「整对象一条」：key 固定，
+  /// 读者取同 key 中 ts 最大的一行生效。
   bool get isSingleWinner =>
-      type == typeSpeechProfile || type == typePersona;
+      type == typeSpeechProfile ||
+      type == typeStyleProfile ||
+      type == typePersona;
 
   final String type;
   final String key;
@@ -127,6 +133,9 @@ String journalKeyForMemoryChunk(int fromId, int toId, String summary) =>
 
 /// speech_profile 的固定 key（整对象一条）。
 const String journalKeySpeechProfile = 'sp:v1';
+
+/// style_profile（她的说话方式档案）的固定 key（整对象一条）。
+const String journalKeyStyleProfile = 'stp:v1';
 
 /// persona 的固定 key（整对象一条）。
 const String journalKeyPersona = 'persona:v1';

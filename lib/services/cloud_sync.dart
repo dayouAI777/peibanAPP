@@ -409,7 +409,7 @@ class CloudSync extends ChangeNotifier {
   ///    云端已有的行原样保留，一行不删不改。3 和 4 之间若上传失败，下次对齐
   ///    仍会因 key 缺失自动重推（幂等、自愈）
   /// 4. 拉取：云端记录走 restoreCloudData 式补缺（内容级去重、坏行净化、
-  ///    本地为主；人设本地有则忽略；speechProfile 本地有才不采用）
+  ///    本地为主；人设本地有则忽略；speechProfile / styleProfile 本地有才不采用）
   /// 5. 更新 lastSyncAt，返回对齐结果（推送 N 条 / 拉取 M 条）
   Future<AlignResult> _run({
     required bool doPush,
@@ -453,7 +453,7 @@ class CloudSync extends ChangeNotifier {
   ///    云端已有的行原样保留，一行不删不改。3 和 4 之间若上传失败，下次对齐
   ///    仍会因 key 缺失自动重推（幂等、自愈）
   /// 4. 拉取：云端记录走 restoreCloudData 式补缺（内容级去重、坏行净化、
-  ///    本地为主；人设本地有则忽略；speechProfile 本地有才不采用）
+  ///    本地为主；人设本地有则忽略；speechProfile / styleProfile 本地有才不采用）
   /// 5. 更新 lastSyncAt，返回对齐结果（推送 N 条 / 拉取 M 条）
   Future<AlignResult> _runLocked(
     CloudBase app, {
@@ -542,10 +542,12 @@ class CloudSync extends ChangeNotifier {
               at,
               c);
         }
-        // speech / persona：固定 key 的整对象记录。内容变了就追加新行
-        // （读者取最新 ts 那行）；内容没变不追加，免得日志无限膨胀。
+        // speech / style_profile / persona：固定 key 的整对象记录。内容变了
+        // 就追加新行（读者取最新 ts 那行）；内容没变不追加，免得日志无限膨胀。
         _pushSingleWinner(appended, cloudLatest, JournalLine.typeSpeechProfile,
             journalKeySpeechProfile, local.speechProfile);
+        _pushSingleWinner(appended, cloudLatest, JournalLine.typeStyleProfile,
+            journalKeyStyleProfile, local.styleProfile);
         _pushSingleWinner(appended, cloudLatest, JournalLine.typePersona,
             journalKeyPersona, local.companion);
 
@@ -580,6 +582,7 @@ class CloudSync extends ChangeNotifier {
         final messages = <Map<String, dynamic>>[];
         Map<String, dynamic>? personaData;
         JournalLine? speechLine;
+        JournalLine? styleProfileLine;
         for (final l in effective) {
           switch (l.type) {
             case JournalLine.typeMessage:
@@ -596,6 +599,9 @@ class CloudSync extends ChangeNotifier {
               break;
             case JournalLine.typeSpeechProfile:
               speechLine = l;
+              break;
+            case JournalLine.typeStyleProfile:
+              styleProfileLine = l;
               break;
             case JournalLine.typePersona:
               personaData = l.data;
@@ -617,6 +623,15 @@ class CloudSync extends ChangeNotifier {
           final localSpeech = await Prefs.speechProfile();
           if (localSpeech.trim().isEmpty) {
             await Prefs.setSpeechProfile(jsonEncode(speechLine.data));
+          }
+        }
+
+        // 她的说话方式档案：手机是唯一蒸馏写入方，本地为主；
+        // 本地还没有档案（空）才采用云端的。
+        if (styleProfileLine != null && styleProfileLine.data.isNotEmpty) {
+          final localStyle = await Prefs.styleProfile();
+          if (localStyle.trim().isEmpty) {
+            await Prefs.setStyleProfile(jsonEncode(styleProfileLine.data));
           }
         }
       }
@@ -745,6 +760,11 @@ class CloudSync extends ChangeNotifier {
       speech = _safeJsonMap(await Prefs.speechProfile());
     } catch (_) {}
 
+    Map<String, dynamic> styleProfile = const <String, dynamic>{};
+    try {
+      styleProfile = _safeJsonMap(await Prefs.styleProfile());
+    } catch (_) {}
+
     final notes = <Map<String, dynamic>>[];
     try {
       notes.addAll(
@@ -783,6 +803,7 @@ class CloudSync extends ChangeNotifier {
     return _LocalExport(
       companion: companion,
       speechProfile: speech,
+      styleProfile: styleProfile,
       notes: notes,
       styleExamples: examples,
       memoryChunks: chunks,
@@ -868,6 +889,9 @@ class CloudSync extends ChangeNotifier {
 class _LocalExport {
   final Map<String, dynamic> companion;
   final Map<String, dynamic> speechProfile;
+
+  /// 她的说话方式档案（整对象一条，key 固定 stp:v1）。
+  final Map<String, dynamic> styleProfile;
   final List<Map<String, dynamic>> notes;
   final List<Map<String, dynamic>> styleExamples;
   final List<Map<String, dynamic>> memoryChunks;
@@ -876,6 +900,7 @@ class _LocalExport {
   const _LocalExport({
     required this.companion,
     required this.speechProfile,
+    required this.styleProfile,
     required this.notes,
     required this.styleExamples,
     required this.memoryChunks,

@@ -3,6 +3,7 @@ import '../models/memory_chunk.dart';
 import '../models/message.dart';
 import '../models/speech_profile.dart';
 import '../models/style_example.dart';
+import '../models/style_profile.dart';
 import '../models/user_note.dart';
 import 'chat_images.dart';
 
@@ -41,6 +42,8 @@ class ContextBuilder {
     SpeechProfile? speech,
     String appearance = '',
     List<StyleExample> styleExamples = const <StyleExample>[],
+    /// 她的说话方式档案：全部范例的长期蒸馏结果（机器产物，全量注入）。
+    StyleProfile? styleProfile,
     /// 【现在】这一段：几号、几点、这个点在干嘛、这个点不能说什么。
     String nowBlock = '',
     /// 距上次说话隔了多久，以及该怎么开口。
@@ -144,6 +147,18 @@ class ContextBuilder {
 
     if (moodBlock.trim().isNotEmpty) {
       b.writeln('\n\n${moodBlock.trim()}');
+    }
+
+    // 她的说话方式档案：全部 style_examples 的长期蒸馏产物（前面会定期用
+    // 模型把用户历次手工修改合并成这份档案）。档案是长期规律，范例是最新鲜
+    // 标杆——所以档案在前、范例在后，冲突时以范例为准。
+    if (styleProfile != null && !styleProfile.isEmpty) {
+      b.writeln('\n【她的说话方式 · 长期形成的习惯（从对方历次修改中学到的）】');
+      b.writeln('（下面是对方在一次次亲手修改里长期沉淀出的你的说话规律，'
+          '照这个习惯说话。学的是味道，不是答案：换个话题也照这个习惯说新话。'
+          '不要复述这些条目，也不要提起「你被修改过」；'
+          '它和后面最新的范例不一致时，以范例为准。）');
+      b.writeln(styleProfile.renderForPrompt().trimRight());
     }
 
     // 用户亲手改过的说法：具体范例对模型的约束力远强于抽象规则，

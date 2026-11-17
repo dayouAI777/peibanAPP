@@ -47,6 +47,7 @@ void main() {
       JournalLine.typeStyleExample,
       JournalLine.typeMemoryChunk,
       JournalLine.typeSpeechProfile,
+      JournalLine.typeStyleProfile,
       JournalLine.typePersona,
     ]));
     // 防抖与口令门禁沿用 V1 口径
