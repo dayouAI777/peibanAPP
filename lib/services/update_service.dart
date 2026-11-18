@@ -52,15 +52,26 @@ class UpdateCheckResult {
   });
 }
 
-/// 在线升级：Git 仓库里的 version.json 就是「升级后台」，不需要服务器。
+/// 在线升级：version.json 就是「升级后台」，不需要服务器。
 ///
-/// 国内访问 GitHub 的三个域名时通时断，旧写法是「raw 超时 12 秒 → 再试 API 15 秒」，
-/// 慢的时候启动要空等近半分钟。这里改成：
-///   1) 三个源并发竞速（raw / jsDelivr CDN / GitHub API），第一个回来后再等 1.2 秒，
-///      收齐了就挑 build 最大的——谁先答不重要，谁新才重要（CDN 有缓存会吐旧清单）；
+/// 清单源是「CDN 主源 + 三源兜底」：主源走自家 CloudBase 静态托管（国内 CDN，
+/// 实测约 2.8 秒出结果），GitHub 系三个源（raw / jsDelivr / GitHub API）作
+/// 兜底——国内访问这三个域名时通时断（raw 实测 15 秒连不上），单独靠它们
+/// 就是用户反馈的「连不上 + 慢」。具体策略：
+///   1) 四个源并发竞速；**TCB 主源一回来立刻采用、不等 grace**（自家权威
+///      源，不存在 CDN 缓存吐旧清单的问题）；其它源（尤其 CDN 有缓存）
+///      回来后仍等 1.2 秒收齐再挑 build 最大的——谁先答不重要，谁新才重要；
 ///   2) 成功一次就把清单缓存到本机，下次先拿缓存判断，再后台刷新；
 ///   3) 全部失败且缓存未过期时，用缓存结果照常提示升级，不因为网络抽风就「检查失败」。
 class UpdateService {
+  /// TCB 主源：自家 CloudBase 静态托管 + 国内 CDN。
+  ///
+  /// 为什么放第一：GitHub 系三源在国内时通时断（raw 实测 15 秒连不上、
+  /// jsDelivr/api 同样不稳定），这个域名实测约 2.8 秒出结果。清单和 APK
+  /// 都从这里走。主理人负责往托管上传 version.json 与 APK，客户端不写。
+  static const String tcbUrl =
+      'https://naughty-beaver-d7gdchzub18ffae94-1455083206.tcloudbaseapp.com/peiban/version.json';
+
   static const String rawUrl =
       'https://raw.githubusercontent.com/dayouAI777/peibanAPP/main/version.json';
 
@@ -71,8 +82,8 @@ class UpdateService {
   static const String apiUrl =
       'https://api.github.com/repos/dayouAI777/peibanAPP/contents/version.json';
 
-  /// 三源竞速的总时限。超过就认输，用缓存兜底。
-  static const Duration raceTimeout = Duration(seconds: 10);
+  /// 四源竞速的总时限。主源快，兜底不需要太久；超过就认输，用缓存兜底。
+  static const Duration raceTimeout = Duration(seconds: 8);
 
   /// 第一个源回来后再等这么久，收其它源的答案。只加 1.2 秒，换来不认错版本。
   static const Duration graceWindow = Duration(milliseconds: 1200);
@@ -149,7 +160,21 @@ class UpdateService {
     return remoteBuild > normalizeBuild(localBuild);
   }
 
-  // ——— 拉清单：三源并发，谁先成功算谁 ———
+  // ——— 拉清单：四源并发，TCB 主源回来直接用 ———
+
+  /// TCB 主源（自家 CloudBase 静态托管）。6 秒超时：它是主源，比兜底源
+  /// （8 秒）更早认输，让位给兜底，不给「整段空等」留机会。
+  Future<String> _tryTcb() async {
+    final r = await http.get(
+      Uri.parse(tcbUrl),
+      headers: {'User-Agent': 'peiban-app'},
+    ).timeout(const Duration(seconds: 6));
+    if (r.statusCode != 200) throw Exception('tcb ${r.statusCode}');
+    final text = utf8.decode(r.bodyBytes, allowMalformed: true);
+    // 托管偶尔会把 404 页面 200 返回，这里用 JSON 解析做一次校验（同 _tryCdn 口径）
+    jsonDecode(text);
+    return text;
+  }
 
   Future<String> _tryRaw() async {
     final r = await http
@@ -188,7 +213,8 @@ class UpdateService {
 
   Future<String> _fetchVersionJson() {
     final completer = Completer<String>();
-    final sources = <Future<String>>[_tryRaw(), _tryCdn(), _tryApi()];
+    // 下标 0 固定是 TCB 主源（见 [_tryTcb]），快路径靠这个位置约定
+    final sources = <Future<String>>[_tryTcb(), _tryRaw(), _tryCdn(), _tryApi()];
     final answers = <String>[];
     var failed = 0;
     Timer? grace;
@@ -198,8 +224,9 @@ class UpdateService {
       completer.complete(newestManifest(answers));
     }
 
-    for (final f in sources) {
-      f.then(
+    for (var i = 0; i < sources.length; i++) {
+      final isTcb = i == 0;
+      sources[i].then(
         (v) {
           if (completer.isCompleted) return;
           answers.add(v);
@@ -208,7 +235,15 @@ class UpdateService {
             done();
             return;
           }
-          // 第一个回来的先别急着用：CDN 可能还吐着上一版的清单，等一小会儿
+          if (isTcb) {
+            // TCB 是自家权威源，不存在 CDN 缓存吐旧清单的问题：
+            // 它一回来立刻采用，不等 grace，用户不用白等那 1.2 秒。
+            // 已有别的源在 grace 窗口里答过的话，取消计时、按现有答案挑最新。
+            grace?.cancel();
+            done();
+            return;
+          }
+          // 非主源先别急着用：CDN 可能还吐着上一版的清单，等一小会儿
           grace ??= Timer(graceWindow, done);
         },
         onError: (Object _, StackTrace __) {
@@ -216,7 +251,7 @@ class UpdateService {
           if (failed == sources.length &&
               answers.isEmpty &&
               !completer.isCompleted) {
-            completer.completeError(Exception('三个源都没连上'));
+            completer.completeError(Exception('四个源都没连上'));
           }
         },
       );
@@ -380,7 +415,8 @@ class UpdateService {
         s.contains('connection timeout') ||
         s.contains('SocketConnection timed out') ||
         s.contains('errno = 110')) {
-      return '连不上 GitHub 的下载服务器，自动重试 3 轮还是没通。'
+      // 现在主通道是自家 CDN、兜底才是 GitHub 系，措辞别绑死 GitHub
+      return '连不上下载服务器，自动重试 3 轮还是没通。'
           '切换一下网络（Wi-Fi ↔ 流量）再点一次通常就好了，版本不会丢。';
     }
     if (s.contains('所有下载源')) {

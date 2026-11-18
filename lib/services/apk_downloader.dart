@@ -6,11 +6,14 @@ import 'package:dio/dio.dart';
 /// 安装包下载器。
 ///
 /// 为什么不能用一句 `dio.download` 了事：
-/// APK 放在 GitHub Releases 上，国内直连 `objects.githubusercontent.com` 基本不通，
-/// 只能走镜像；而单个镜像的单连接实测只有 250~570 KB/s，50 多 MB 要下两分钟以上。
+/// APK 放在 GitHub Releases 上时，国内直连 `objects.githubusercontent.com`
+/// 基本不通，只能走镜像；而单个镜像的单连接实测只有 250~570 KB/s，
+/// 50 多 MB 要下两分钟以上。
 ///
 /// 这里做了三件事：
-///   1. **挑最快的源**：同时探测「直连 / ghfast / ghproxy」，各拉 256KB 测速，谁快用谁；
+///   1. **挑最快的源**：GitHub 链接同时探测「直连 / ghfast / ghproxy」，
+///      各拉 256KB 测速，谁快用谁；**非 GitHub 链接（如自家 CDN
+///      tcloudbaseapp.com）跳过挑源直连**——镜像前缀拼上去就是垃圾地址；
 ///   2. **分段并发**：支持 Range 的源拆成最多 8 段同时下，实测吞吐能到 1 MB/s 上下；
 ///   3. **断点续传**：每段落到独立分片文件，断了重下只补缺的那段，不从头再来。
 class ApkDownloader {
@@ -55,7 +58,13 @@ class ApkDownloader {
     final dest = File(destPath);
     if (await dest.exists()) await dest.delete();
 
-    final pick = await _pickMirror(url, onStatus: onStatus);
+    // 只有 GitHub 链接才需要挑镜像：镜像前缀拼到非 GitHub 地址前面
+    // （如自家 CDN tcloudbaseapp.com）就是垃圾地址，三个源全废。
+    // CDN 直连支持 Range，后面的分段并发照样生效。
+    final onGithub = url.contains('github.com');
+    final pick = onGithub
+        ? await _pickMirror(url, onStatus: onStatus)
+        : const _Pick('', 0, 0);
     final fullUrl = '${pick.prefix}$url';
     onStatus?.call(pick.prefix.isEmpty ? '直连下载中…' : '走加速通道下载中…');
 

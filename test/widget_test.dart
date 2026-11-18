@@ -362,6 +362,22 @@ void main() {
     expect(UpdateService.newestManifest([stale]), stale);
   });
 
+  test('清单源：TCB 主源常量与竞速口径钉死', () {
+    // 主源 = 自家 CloudBase 静态托管（国内 CDN）。GitHub 系三源在国内实测
+    // 时通时断（raw 15 秒不通），只有这个稳定；URL 手滑一位全体用户检查
+    // 更新就废，钉死。清单和 APK 必须同域同目录（/peiban/），两边一起换。
+    expect(
+      UpdateService.tcbUrl,
+      'https://naughty-beaver-d7gdchzub18ffae94-1455083206.tcloudbaseapp.com'
+      '/peiban/version.json',
+    );
+    expect(UpdateService.tcbUrl.startsWith('https://'), isTrue);
+    // 主源快（实测约 2.8s），兜底竞速总时限相应收紧为 8 秒（原 10 秒）
+    expect(UpdateService.raceTimeout, const Duration(seconds: 8));
+    // grace 语义不变：非主源回来仍等 1.2 秒挑最新（CDN 缓存会吐旧清单）
+    expect(UpdateService.graceWindow, const Duration(milliseconds: 1200));
+  });
+
   test('坏清单不会盖掉好清单', () {
     const good = '{"version":"1.6.1","build":13}';
     expect(UpdateService.buildOf('<html>404</html>'), 0);

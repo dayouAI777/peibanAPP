@@ -131,6 +131,134 @@ void main() {
     expect(await Prefs.cloudAuthCode(), 'auth-code-99999');
   });
 
+  test('isTokenExpiredText：SDK 原文与错误码都能命中', () {
+    // SDK 原文（全小写、带 docs 链接）：用户实际看到的报错原文
+    expect(
+      CloudSync.isTokenExpiredText(
+          'access token has expired. for more information, please refer to '
+          'https://docs.cloudbase.net/error-code/service/access_token_expired'),
+      isTrue,
+    );
+    // 网关错误码：大写 code 形式
+    expect(CloudSync.isTokenExpiredText('ACCESS_TOKEN_EXPIRED'), isTrue);
+    // 小写错误码（_storageMessage 会把 code 转大写后再比较，但 message 保持原样）
+    expect(CloudSync.isTokenExpiredText('access_token_expired'), isTrue);
+    // 网关换措辞时的兜底口径（'token expired'）
+    expect(CloudSync.isTokenExpiredText('token expired'), isTrue);
+    // 混合大小写（e.toString() 原文常带异常类名前缀）
+    expect(CloudSync.isTokenExpiredText('Access Token Has Expired'), isTrue);
+    // 带中文前缀的完整失败文案（'$prefix：$raw' 口径，正是 _runLocked 收到的形态）
+    expect(
+      CloudSync.isTokenExpiredText(
+          '对齐失败：access token has expired. for more information'),
+      isTrue,
+    );
+    // _storageMessage 对 401 的新产出形态（dio 兜底文案 'Http status error
+    // [401]' 没有 token 字面量，实现里翻成了可判别口径，401 分支在最前面）
+    expect(
+      CloudSync.isTokenExpiredText(
+          '对齐失败：登录态已过期（access_token_expired），请再点一次对齐'),
+      isTrue,
+    );
+  });
+
+  test('isTokenExpiredText：非 token 过期错误不误伤', () {
+    // 空串：直接 false，不抛
+    expect(CloudSync.isTokenExpiredText(''), isFalse);
+    // 普通网络错误文案（本项目统一口径）
+    expect(CloudSync.isTokenExpiredText('连不上云端，请检查网络'), isFalse);
+    // 云存储常见错误：NOT_FOUND / 权限类，都和登录态过期无关
+    expect(CloudSync.isTokenExpiredText('NOT_FOUND: file not found'), isFalse);
+    expect(
+        CloudSync.isTokenExpiredText('云端拒绝了这次操作（权限问题）'), isFalse);
+    // 「稍后重试」包装文案（_anyMessage 对非过期异常的输出）
+    expect(CloudSync.isTokenExpiredText('对齐失败，请稍后重试'), isFalse);
+  });
+
+  test('isTokenExpiredText：三条失败文案出口的**实际产出形态**都能命中（自愈接缝）', () {
+    // 这是整条自愈链上唯一的判定接缝：只要 _storageMessage / _anyMessage 的
+    // 产出文案不再包含 token 过期字样，_runLocked / destroyCloud 就永远不会换
+    // 会话重试，而且不会有任何测试变红。这里把三个出口的真实产出形态钉死：
+    // 形态来自 cloud_sync.dart 的 _storageMessage / _anyMessage 实现：
+    //   _storageMessage: '$prefix：$raw'（raw 已 toLowerCase）、
+    //                    '$prefix：云端返回错误（$code）'（message 为空时，code 大写）、
+    //                    '$prefix：access_token_expired（登录态已过期…）'（status==401）
+    //   _anyMessage:     '$prefix：登录态已过期，请再点一次对齐（${e.toString()}）'
+
+    // 出口 1：下载失败（_runLockedOnce 里 '$verb失败'）
+    //   1a. message 非空 → 小写原文
+    expect(
+      CloudSync.isTokenExpiredText('对齐失败：access token has expired. '
+          'for more information, please refer to https://docs.cloudbase.net/'
+          'error-code/service/access_token_expired'),
+      isTrue,
+    );
+    //   1b. message 为空 → 只剩大写错误码，必须仍能被小写化匹配命中
+    expect(
+      CloudSync.isTokenExpiredText('对齐失败：云端返回错误（ACCESS_TOKEN_EXPIRED）'),
+      isTrue,
+    );
+    //   1c. status==401（dio 兜底文案无 token 字面量，实现里已翻成可判别口径）
+    expect(
+      CloudSync.isTokenExpiredText(
+          '对齐失败：登录态已过期（access_token_expired），请再点一次对齐'),
+      isTrue,
+    );
+
+    // 出口 2：上传失败（'$verb时上传失败'）
+    expect(
+      CloudSync.isTokenExpiredText('对齐时上传失败：云端返回错误（ACCESS_TOKEN_EXPIRED）'),
+      isTrue,
+    );
+
+    // 出口 3：异常兜底（_anyMessage 的
+    // '$prefix：登录态已过期，请再点一次对齐（${e.toString()}）'）
+    expect(
+      CloudSync.isTokenExpiredText(
+          '对齐失败：登录态已过期，请再点一次对齐（AuthError(code: '
+          'access_token_expired, message: ...)）'),
+      isTrue,
+    );
+
+    // 出口 4：destroyCloud 空覆盖上传失败（'销毁失败'）——重传一次也靠同一判定
+    expect(
+      CloudSync.isTokenExpiredText('销毁失败：云端返回错误（ACCESS_TOKEN_EXPIRED）'),
+      isTrue,
+    );
+    expect(
+      CloudSync.isTokenExpiredText('销毁失败：access token has expired'),
+      isTrue,
+    );
+  });
+
+  test('isTokenExpiredText：其它存储错误码不会被当成登录态过期（不误伤重试）', () {
+    // 非过期类云存储错误：NOT_FOUND（空库）、权限、通用失败码——都不该换会话重试
+    expect(
+      CloudSync.isTokenExpiredText('对齐失败：云端返回错误（NOT_FOUND）'),
+      isFalse,
+    );
+    expect(
+      CloudSync.isTokenExpiredText('对齐失败：云端返回错误（STORAGE_PG_REQUEST_FAIL）'),
+      isFalse,
+    );
+    expect(
+      CloudSync.isTokenExpiredText('云端拒绝了这次操作（权限问题），请联系主理人检查桶策略'),
+      isFalse,
+    );
+    // 网络类错误（timeout / 连不上）也不该走「换会话」分支
+    expect(CloudSync.isTokenExpiredText('连不上云端，请检查网络'), isFalse);
+    expect(
+      CloudSync.isTokenExpiredText('对齐失败：DioException [connection timeout]'),
+      isFalse,
+    );
+    // 只提到 token 这个词、但没说过期：不能命中（避免 contains('token') 式过宽匹配）
+    expect(
+      CloudSync.isTokenExpiredText('对齐失败：invalid token format'),
+      isFalse,
+    );
+    expect(CloudSync.isTokenExpiredText('token'), isFalse);
+  });
+
   test('persona 跨设备收敛：仅 avatar_path 不同的两份内容 → 判「内容没变」不追加', () {
     // 同一个人设，手机端与本机（Agent 场景同理）沙盒路径必然不同
     final cloudData = <String, dynamic>{

@@ -272,6 +272,21 @@ class CloudSync extends ChangeNotifier {
   static bool authCodeMatches(String stored, String input) =>
       stored.isNotEmpty && input.trim() == stored;
 
+  /// 判断一段错误文本是否为「登录态过期」类错误（token 过期需换新会话重试）。
+  ///
+  /// 纯静态、可测。匹配 cloudbase 网关的几类口径：
+  /// - 错误码 `ACCESS_TOKEN_EXPIRED`（`access_token_expired`）；
+  /// - SDK 原文「access token has expired. for more information, ...」；
+  /// - 「token expired」（网关换措辞时的兜底口径）。
+  /// 一律小写化后 contains 匹配，调用方传进来的文案无论什么大小写、
+  /// 带不带中文前缀（如「对齐失败：...」）都能命中。
+  static bool isTokenExpiredText(String raw) {
+    final s = raw.toLowerCase();
+    return s.contains('access_token_expired') ||
+        s.contains('token has expired') ||
+        s.contains('token expired');
+  }
+
   /// 首次设置授权码。已设置过则拒绝（走 [changeAuthCode] 修改流程）。
   Future<PassphraseOutcome> setAuthCode(String code) async {
     final v = code.trim();
@@ -359,27 +374,19 @@ class CloudSync extends ChangeNotifier {
     _busy = true;
     try {
       _setStatus(SyncStatus.syncing, null);
-      try {
-        final bucket = app.storage.fromBucket(bucketId);
-        // 覆盖上传空 journal（全协议唯一的整文件覆盖点）
-        final up = await bucket.upload(
-          journalPath,
-          utf8.encode(''),
-          options: PgStorageUploadOptions(
-            contentType: 'application/jsonl',
-            upsert: true,
-          ),
-        );
-        if (up.error != null) {
-          // 上传失败：云端保持原样，一个字节都没动
-          final msg = _storageMessage(up.error!, '销毁失败');
-          _setStatus(SyncStatus.error, msg);
-          return AlignResult(ok: false, message: '$msg（云端保持原样）');
-        }
-      } catch (e) {
-        final msg = _anyMessage(e, '销毁失败');
-        _setStatus(SyncStatus.error, msg);
-        return AlignResult(ok: false, message: '$msg（云端保持原样）');
+      // 覆盖上传空 journal（全协议唯一的整文件覆盖点）。PG 存储路径没有 SDK
+      // 的 token 刷新重试拦截，撞上过期 token 时换新会话重试一次（与
+      // _runLocked 的自愈同一套口径）
+      var emptyErr = await _uploadEmptyJournal(app);
+      if (emptyErr != null &&
+          isTokenExpiredText(emptyErr) &&
+          await _recoverSession(app)) {
+        emptyErr = await _uploadEmptyJournal(app);
+      }
+      if (emptyErr != null) {
+        // 上传失败：云端保持原样，一个字节都没动
+        _setStatus(SyncStatus.error, emptyErr);
+        return AlignResult(ok: false, message: '$emptyErr（云端保持原样）');
       }
       // 销毁成功：同一把锁内立即把本地当前记忆重新对齐上传
       final r = await _runLocked(app, doPush: true, doPull: true, verb: '对齐');
@@ -398,6 +405,28 @@ class CloudSync extends ChangeNotifier {
       );
     } finally {
       _busy = false;
+    }
+  }
+
+  /// 覆盖上传空 journal（销毁的覆盖点）。成功返回 null；失败返回中文错误
+  /// 文案（[CloudSync.isTokenExpiredText] 可对其判别是否登录态过期）。
+  /// 抽成独立方法：token 过期自愈要「失败 → 换会话 → 原样再传一次」，
+  /// 不抽的话重试逻辑得把 StorageError / 异常两条失败路径各抄一遍。
+  Future<String?> _uploadEmptyJournal(CloudBase app) async {
+    try {
+      final bucket = app.storage.fromBucket(bucketId);
+      final up = await bucket.upload(
+        journalPath,
+        utf8.encode(''),
+        options: PgStorageUploadOptions(
+          contentType: 'application/jsonl',
+          upsert: true,
+        ),
+      );
+      if (up.error != null) return _storageMessage(up.error!, '销毁失败');
+      return null;
+    } catch (e) {
+      return _anyMessage(e, '销毁失败');
     }
   }
 
@@ -442,10 +471,70 @@ class CloudSync extends ChangeNotifier {
     }
   }
 
+  /// 对齐/拉取入口（薄壳）：先跑一次 [_runLockedOnce]；失败文案命中
+  /// [isTokenExpiredText] 时，换新会话后**重试一次**，返回第二次结果。
+  ///
+  /// 为什么在这里修：cloudbase_flutter 的「token 过期 → 刷新 → 重试」拦截
+  /// 只挂在 auth/callFunction 路径，PG 云存储走裸 HTTP 直连，过期后
+  /// StorageError 原样冒出（用户看到的就是「对齐失败：access token has
+  /// expired」）。ensureSignedIn 只看 SDK 有没有持久化会话、不校验 token
+  /// 有效性，所以过期会话会被一路复用。修法是在 App 层识别过期文案，
+  /// signOut 清掉持久化会话后重新匿名登录——新会话即可用（journal 目录
+  /// 按口令哈希寻址，与 uid 无关）。
+  ///
+  /// 只重试一次：避免网络抖动 + 会话异常组合成无限循环。
+  Future<AlignResult> _runLocked(
+    CloudBase app, {
+    required bool doPush,
+    required bool doPull,
+    required String verb,
+  }) async {
+    final first = await _runLockedOnce(
+      app,
+      doPush: doPush,
+      doPull: doPull,
+      verb: verb,
+    );
+    if (first.ok || !isTokenExpiredText(first.message)) return first;
+    // token 过期：换新会话。恢复失败（网络等）就不重试了，如实返回第一次结果
+    if (!await _recoverSession(app)) return first;
+    return _runLockedOnce(
+      app,
+      doPush: doPush,
+      doPull: doPull,
+      verb: verb,
+    );
+  }
+
+  /// 登录态过期后的会话恢复：signOut 清掉 SDK 持久化的旧会话（token 已过期，
+  /// 留着只会被 ensureSignedIn 复用），再匿名登录拿一个新会话。
+  ///
+  /// signOut 的任何异常都忽略——目标只是「清空本地会话」，网络失败也要继续
+  /// 尝试重新登录。
+  Future<bool> _recoverSession(CloudBase app) async {
+    // 不要拿 uid 判断「是否真的换了新会话」：CloudBase 匿名登录按 x-device-id
+    // 去重（device_id 持久化在 SDK prefs，signOut 只清 currentSession 不清它），
+    // 重新匿名登录拿到的是新 access_token + 同一个 uid。uid 比对会恒为 false，
+    // 把自愈整个关死（这段代码曾经就这么死过一次，测试还是全绿的）。
+    // 这里只信 signOut 的契约：auth.dart 的 signOut 无条件把 currentSession
+    // 置 null（revoke 失败也置），所以紧接着的 ensureSignedIn 必然走新登录。
+    // 重试严格有界（一次），最坏情况只是白发一次请求。
+    try {
+      await app.auth.signOut();
+    } catch (_) {
+      // 清会话失败也继续：下一步 ensureSignedIn 会给出最终结论
+    }
+    _uid = '';
+    return await ensureSignedIn();
+  }
+
   /// 对齐/拉取核心（调用方必须已持 `_busy` 锁；本方法不管锁、不管门禁）。
   ///
   /// destroyCloud 的「空覆盖 → 重推」全程共用同一把锁，中间防抖 pushOnly
   /// 插不进来——不会出现「销毁刚完成、旧数据被并发写回复活」的竞态。
+  ///
+  /// token 过期自愈在 [_runLocked] 薄壳里做（换新会话重试一次），本方法
+  /// 内部逻辑一行不动。
   ///
   /// 1. 下载 journal.jsonl → 解析全部有效行 + key 集合（坏行跳过；NOT_FOUND = 空库）
   /// 2. 推送：导出本地全部记录，逐条算 key；key 不在云端 key 集合的 → 生成追加行
@@ -455,7 +544,7 @@ class CloudSync extends ChangeNotifier {
   /// 4. 拉取：云端记录走 restoreCloudData 式补缺（内容级去重、坏行净化、
   ///    本地为主；人设本地有则忽略；speechProfile / styleProfile 本地有才不采用）
   /// 5. 更新 lastSyncAt，返回对齐结果（推送 N 条 / 拉取 M 条）
-  Future<AlignResult> _runLocked(
+  Future<AlignResult> _runLockedOnce(
     CloudBase app, {
     required bool doPush,
     required bool doPull,
@@ -859,6 +948,15 @@ class CloudSync extends ChangeNotifier {
   String _storageMessage(StorageError e, String prefix) {
     final code = (e.code ?? '').toUpperCase();
     final raw = (e.message ?? '').trim().toLowerCase();
+    // 401 必须放在所有分支之前：网关有时用 401 + 空 body 回过期，body 没有
+    // message 时 dio 兜底文案是「Http status error [401]」，里面没有 token
+    // 字面量，不在这里翻成可判别口径的话自愈会静默失效。也不许落进 403 的
+    // 「权限问题」（网关偶尔用 403 表过期同样会被挡）。文案不写「正在自动
+    // 重试」：自动重试成功时用户根本看不到这条，只有重试也失败才显示，
+    // 中性措辞两种情形都成立（本项目规矩：文案必须如实，不许自作多情）。
+    if (e.status == 401) {
+      return '$prefix：登录态已过期（access_token_expired），请再点一次对齐';
+    }
     if (code.contains('TIMEOUT') ||
         code.contains('UNREACHABLE') ||
         raw.contains('timeout')) {
@@ -875,6 +973,13 @@ class CloudSync extends ChangeNotifier {
 
   String _anyMessage(Object e, String prefix) {
     final raw = e.toString().toLowerCase();
+    // token 过期原文必须原样保留（'$prefix：$raw' 口径）：_runLocked 靠
+    // result.message 里的这段文本来判断「要不要换会话重试」，包成
+    // 「请稍后重试」会让自愈永远触发不了。恢复失败（重试也不成）时用户
+    // 会看到这条，所以先给人话、异常英文原文放括号里兜底。
+    if (isTokenExpiredText(raw)) {
+      return '$prefix：登录态已过期，请再点一次对齐（${e.toString()}）';
+    }
     if (raw.contains('timeout') ||
         raw.contains('socket') ||
         raw.contains('connection') ||

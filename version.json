@@ -1,15 +1,17 @@
 {
-  "version": "1.7.1",
-  "build": 17,
-  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.7.1/app-arm64-v8a-release.apk",
+  "version": "1.7.2",
+  "build": 18,
+  "apk_url": "https://naughty-beaver-d7gdchzub18ffae94-1455083206.tcloudbaseapp.com/peiban/app-arm64-v8a-release.apk",
   "changelog": [
+    "修：点「对齐云端」报 access token has expired 的问题——现在登录态过期会自动换新会话重试一次，不用你重设口令",
+    "快：检查更新和下载安装包的通道换到国内 CDN，以前要等十几秒还经常连不上，现在基本一两秒就有结果",
     "新：她的说话方式档案（长期记忆）。以前只读最近 12 条说话范例，范例攒多了后面的就「忘」了；现在每隔几轮自动把所有范例蒸馏成一份说话方式档案，聊得越久她对「怎么说话」记得越全",
     "档案随云母库一起上云同步，换手机、电脑端 Agent 都能读到同一份",
     "设置页新增「说话方式档案」只读状态行，能看到档案有没有生成、更新时间",
     "冲突规则：具体范例优先于档案，档案只是兜底，不会让她变得千篇一律",
-    "签名没变，1.7.0 可直接覆盖安装"
+    "签名没变，旧版直接覆盖安装"
   ],
-  "published_at": "2026-11-17",
+  "published_at": "2026-11-18",
   "min_supported": "1.1.0",
   "force": false
 }
