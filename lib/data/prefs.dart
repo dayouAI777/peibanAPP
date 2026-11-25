@@ -36,6 +36,7 @@ class Prefs {
   static const _kIgnoredBuild = 'ignored_build';
   static const _kLastUpdateCheck = 'last_update_check';
   static const _kEmojiLevel = 'emoji_level';
+  static const _kEmojiHistory = 'emoji_picker_history';
   static const _kSpeechProfile = 'speech_profile';
   static const _kChatBackground = 'chat_background';
 
@@ -360,6 +361,18 @@ class Prefs {
 
   static Future<void> setEmojiLevel(int v) async =>
       (await SharedPreferences.getInstance()).setInt(_kEmojiLevel, v.clamp(0, 2));
+
+  static const emojiHistoryLimit = 120;
+
+  static Future<List<String>> emojiHistory() async =>
+      (await SharedPreferences.getInstance()).getStringList(_kEmojiHistory) ??
+      const [];
+
+  static Future<void> recordEmojiUse(String emoji) async {
+    final prefs = await SharedPreferences.getInstance();
+    final history = prefs.getStringList(_kEmojiHistory) ?? const <String>[];
+    await prefs.setStringList(_kEmojiHistory, [emoji, ...history.take(emojiHistoryLimit - 1)]);
+  }
 
   static Future<ProactiveSettings> proactiveSettings() async {
     final sp = await SharedPreferences.getInstance();

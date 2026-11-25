@@ -40,6 +40,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final _focus = FocusNode();
   bool _proactiveDone = false;
   bool _showEmoji = false;
+  TextSelection? _emojiSelection;
   String? _pickedImage; // 待发送的图片（已拷进沙盒）
 
   /// 页面自己的“现在”。20 秒跳一次，足够让状态和时间跟上现实。
@@ -151,12 +152,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   void _insertEmoji(String emoji) {
     final text = _input.text;
-    final sel = _input.selection;
-    final pos = (sel.isValid && sel.baseOffset >= 0 && sel.baseOffset <= text.length)
-        ? sel.baseOffset
-        : text.length;
-    _input.text = text.substring(0, pos) + emoji + text.substring(pos);
-    _input.selection = TextSelection.collapsed(offset: pos + emoji.length);
+    final selection = _emojiSelection ?? _input.selection;
+    final isInText = selection.isValid && selection.end <= text.length;
+    final start = isInText ? selection.start : text.length;
+    final end = isInText ? selection.end : text.length;
+    final cursor = TextSelection.collapsed(offset: start + emoji.length);
+    _emojiSelection = cursor;
+    _input.value = TextEditingValue(
+      text: text.replaceRange(start, end, emoji),
+      selection: cursor,
+    );
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -582,11 +587,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                   child: Row(
                     children: [
                       IconButton(
-                        tooltip: '表情',
+                        tooltip: _showEmoji ? '收起表情' : '表情',
                         icon: Icon(_showEmoji
-                            ? Icons.keyboard_outlined
+                            ? Icons.expand_more
                             : Icons.sentiment_satisfied_alt_outlined),
                         onPressed: () {
+                          if (!_showEmoji) _emojiSelection = _input.selection;
                           FocusScope.of(context).unfocus();
                           setState(() => _showEmoji = !_showEmoji);
                           _keepAtBottom();
@@ -653,7 +659,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                     ],
                   ),
                 ),
-                if (_showEmoji) EmojiPicker(onTap: _insertEmoji),
+                if (_showEmoji && MediaQuery.viewInsetsOf(context).bottom == 0)
+                  EmojiPicker(onTap: _insertEmoji),
               ],
             ),
           ),
