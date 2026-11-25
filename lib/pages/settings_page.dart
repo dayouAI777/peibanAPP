@@ -6,6 +6,7 @@ import '../data/prefs.dart';
 import '../models/style_profile.dart';
 import '../services/cloud_sync.dart';
 import '../services/export_service.dart';
+import '../services/export_share.dart';
 import '../services/proactive_diag.dart';
 import '../services/proactive_service.dart';
 import '../services/update_service.dart';
@@ -184,7 +185,10 @@ class _SettingsPageState extends State<SettingsPage> {
     String message;
     try {
       final lines = await cloud.buildLocalJournalLines();
-      final r = await ExportService.export(
+      // 走 exportAndShare：文件写到 App 私有目录，**用户拿不到**，所以导出
+      // 成功后必须把文件递进系统分享面板（保存到文件 / 发给自己 / 存网盘）。
+      // 分享失败不改变导出结果——文件已经在磁盘上了。
+      final r = await ExportShare.exportAndShare(
         lines: lines,
         mode: mode,
         cloudSync: cloudSync,
