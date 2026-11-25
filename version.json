@@ -1,11 +1,11 @@
 {
-  "version": "1.8.2",
-  "build": 23,
-  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.8.2/app-arm64-v8a-release.apk",
+  "version": "1.8.3",
+  "build": 24,
+  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.8.3/app-arm64-v8a-release.apk",
   "changelog": [
-    "设置页按用途归纳为六组，保存按钮固定在底部",
-    "本地提醒、云端送达和通知诊断集中管理，清理与重置收进二级分组",
-    "从通知诊断返回时保留未保存的设置"
+    "聊天框表情扩充到 442 个，归为 8 类",
+    "新增表情总览，可连续浏览，也可按分类筛选",
+    "新增常用表情，按使用频次排序并保存在本机"
   ],
   "published_at": "2026-11-25",
   "min_supported": "1.7.4",
