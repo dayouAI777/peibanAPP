@@ -715,654 +715,492 @@ class _SettingsPageState extends State<SettingsPage> {
               child: Text('${h.toString().padLeft(2, '0')}:00')),
       ];
 
-  @override
-  Widget build(BuildContext context) {
+  Future<void> _openProactiveDiagnostics() async {
+    await Navigator.pushNamed(context, '/diagnostics');
+    if (!mounted) return;
+    final diag = await ProactiveDiag.load();
+    if (mounted) setState(() => _diag = diag);
+  }
+
+  List<Widget> _appearanceSettings(BuildContext context) {
+    return [
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.edit_outlined),
+        title: const Text('修改头像与昵称'),
+        subtitle: const Text('只改外观；性格定稿后不可改'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.pushNamed(context, '/appearance'),
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.article_outlined),
+        title: const Text('查看人设档案（只读）'),
+        subtitle: const Text('定稿后不能改'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.pushNamed(context, '/home'),
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.wallpaper_rounded),
+        title: const Text('聊天背景'),
+        subtitle: const Text('预设渐变，或用自己相册里的图'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.pushNamed(context, '/background'),
+      ),
+    ];
+  }
+
+  List<Widget> _chatSettings(BuildContext context) {
     final theme = Theme.of(context);
-    if (!_loaded) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
+    return [
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.psychology_outlined),
+        title: const Text('她的自我'),
+        subtitle: const Text('她长出来的想法 · 可查看来源、可删'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const SelfPage()),
+        ),
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.edit_note_rounded),
+        title: const Text('她学到的说法'),
+        subtitle: Text(
+          context.watch<AppState>().styleExamples.isEmpty
+              ? '长按她说的话，写一遍她该怎么说'
+              : '${context.watch<AppState>().styleExamples.length} 条，长按消息可随时加',
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.pushNamed(context, '/style-examples'),
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.record_voice_over_rounded),
+        title: const Text('她的说话方式档案'),
+        subtitle:
+            Text(_styleProfileStatus(context.watch<AppState>().styleProfile)),
+        // 只读状态行：档案是机器蒸馏产物，不做编辑入口
+        // （与「人设定稿不改」同一精神），攒够修改自动更新。
+      ),
+      Padding(
+        padding: const EdgeInsets.only(left: 56, bottom: 4),
+        child: Text(
+          '节奏适配：档案只用来对齐句长和节奏，不模仿对方的用词、情绪和态度——'
+          '她和 TA 是两个人；和「她的自我」冲突时，以她自己的说法为准。',
+          style: theme.textTheme.bodySmall
+              ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+        ),
+      ),
+      const Divider(height: 24),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: _moodEnabled,
+        title: const Text('她会有情绪'),
+        subtitle: const Text('一直不理她会生气、会甩个表情不说话，得哄；哄好了会自己下台阶。关掉就永远好脾气'),
+        onChanged: (v) => setState(() => _moodEnabled = v),
+      ),
+      Text('TA 用表情：${EmojiKit.labelOf(_emojiLevel)}'),
+      DropdownButton<int>(
+        value: _emojiLevel,
+        isExpanded: true,
+        items: const [
+          DropdownMenuItem(value: 0, child: Text('不用表情')),
+          DropdownMenuItem(value: 1, child: Text('偶尔用')),
+          DropdownMenuItem(value: 2, child: Text('常用（默认，回复生动）')),
+        ],
+        onChanged: (v) => setState(() => _emojiLevel = v ?? 1),
+      ),
+      const SizedBox(height: 12),
+      Text('记忆窗口：最近 $_contextWindow 句'),
+      Slider(
+        value: _contextWindow.toDouble(),
+        min: 200,
+        max: 5000,
+        divisions: 24,
+        label: '$_contextWindow 句',
+        onChanged: (v) => setState(() => _contextWindow = v.round()),
+      ),
+      Text(
+        '窗口内的对话都记得住；更早的会由 AI 压成摘要长期带着，不会丢，也不会每次把上千句原文全发出去。',
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+      ),
+      const SizedBox(height: 12),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: _manualEnabled,
+        title: const Text('记录我的行为习惯'),
+        subtitle: const Text('AI 判断 + 内置规则，只记稳定的习惯'),
+        onChanged: (v) => setState(() => _manualEnabled = v),
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.menu_book_outlined),
+        title: const Text('查看行为记录手册'),
+        subtitle: const Text('能看到记了什么，也能逐条删'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.pushNamed(context, '/manual'),
+      ),
+    ];
+  }
 
-    return Scaffold(
-      appBar: AppBar(title: const Text('设置')),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
-        children: [
-          // ——— 在线升级 ———
-          Text('版本与升级', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 8),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.system_update_alt_rounded),
-            title: Text('当前版本 $_versionText'),
-            subtitle: const Text('Git 仓库 version.json 作后台；App 主动查，不是推送'),
-          ),
-          OutlinedButton.icon(
-            onPressed: _checking ? null : _checkUpdate,
-            icon: _checking
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.refresh_rounded, size: 18),
-            label: Text(_checking ? '正在检查…' : '检查更新'),
-            style: OutlinedButton.styleFrom(
-                minimumSize: const Size.fromHeight(48)),
-          ),
-          if (_updateStatus != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(_updateStatus!,
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(color: Colors.grey.shade700)),
+  List<Widget> _proactiveSettings(BuildContext context) {
+    return [
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: _s.enabled,
+        title: const Text('偶尔让 TA 主动找我'),
+        subtitle: const Text('预约本地通知，点开后现场生成一句话'),
+        onChanged: (v) => setState(() => _s = ProactiveSettings(
+              enabled: v,
+              perDay: _s.perDay,
+              startHour: _s.startHour,
+              endHour: _s.endHour,
+            )),
+      ),
+      if (_s.enabled) ...[
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          children: [
+            const Text('每天'),
+            DropdownButton<int>(
+              value: _s.perDay,
+              items: const [
+                DropdownMenuItem(value: 1, child: Text('1 条')),
+                DropdownMenuItem(value: 2, child: Text('2 条')),
+                DropdownMenuItem(value: 3, child: Text('3 条')),
+              ],
+              onChanged: (v) => setState(() => _s = ProactiveSettings(
+                    enabled: true,
+                    perDay: v ?? 1,
+                    startHour: _s.startHour,
+                    endHour: _s.endHour,
+                  )),
             ),
-          SwitchListTile(
+          ],
+        ),
+        const SizedBox(height: 12),
+        const Text('提醒时段'),
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          children: [
+            DropdownButton<int>(
+              value: _s.startHour,
+              items: _hours(0, 22),
+              onChanged: (v) => setState(() => _s = ProactiveSettings(
+                    enabled: true,
+                    perDay: _s.perDay,
+                    startHour: v ?? 9,
+                    endHour: _s.endHour > (v ?? 9) ? _s.endHour : (v ?? 9) + 1,
+                  )),
+            ),
+            const Text('至'),
+            DropdownButton<int>(
+              value: _s.endHour > 24 ? 24 : _s.endHour,
+              items: _hours(1, 24),
+              onChanged: (v) => setState(() => _s = ProactiveSettings(
+                    enabled: true,
+                    perDay: _s.perDay,
+                    startHour: _s.startHour,
+                    endHour:
+                        (v ?? 23) > _s.startHour ? (v ?? 23) : _s.startHour + 1,
+                  )),
+            ),
+          ],
+        ),
+      ],
+      const Divider(height: 28),
+      ListenableBuilder(
+        listenable: CloudSync.instance,
+        builder: (context, _) {
+          final available = _cloudSyncOn && CloudSync.instance.hasPassphrase;
+          return SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            value: _autoUpdate,
-            title: const Text('启动时自动检查更新'),
-            subtitle: const Text('只检查、不自动下载；发现新版会在首页显示提示'),
-            onChanged: (v) => setState(() => _autoUpdate = v),
-          ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _silentUpdate,
-            title: const Text('后台静默升级'),
-            subtitle: const Text(
-                '启动后在后台查版本、下安装包，不挡聊天也不弹窗；下好才提示一下，装不装你说了算'),
-            onChanged: (v) => setState(() => _silentUpdate = v),
-          ),
-          const Padding(
-            padding: EdgeInsets.only(top: 4, bottom: 6),
-            child: SilentUpdateBanner(showProgress: true),
-          ),
-          const Divider(height: 28),
+            value: available && _cloudProactiveOn,
+            title: const Text('云端按时送达'),
+            subtitle: Text(available
+                ? '云端靠 App 预先生成的话，最近 48 小时内打开过 App 才带记忆'
+                : '请先在「同步与导出」中开启云同步并设置口令'),
+            onChanged: available && !_cloudBusy ? _cloudProactiveToggle : null,
+          );
+        },
+      ),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.monitor_heart_outlined),
+        title: const Text('主动消息诊断'),
+        subtitle: Text(ProactiveDiag.summary(_diag)),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: _openProactiveDiagnostics,
+      ),
+    ];
+  }
 
-          // ——— 连接 ———
-          Text('DeepSeek API Key', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 8),
-          TextField(
-            controller: _key,
-            obscureText: _obscure,
-            onChanged: (_) => setState(() {
-              _testOk = false;
-              _testMessage = null;
-            }),
-            decoration: InputDecoration(
-              hintText: 'sk-...',
-              suffixIcon: IconButton(
-                icon: Icon(_obscure
-                    ? Icons.visibility_outlined
-                    : Icons.visibility_off_outlined),
-                onPressed: () => setState(() => _obscure = !_obscure),
+  List<Widget> _dataSettings(BuildContext context) {
+    final theme = Theme.of(context);
+    return [
+      ListenableBuilder(
+        listenable: CloudSync.instance,
+        builder: (context, _) {
+          final cloud = CloudSync.instance;
+          final active = _cloudSyncOn && cloud.hasPassphrase;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _cloudSyncOn,
+                title: const Text('开启云同步'),
+                subtitle: const Text('聊天记忆备份到云端你自己的口令目录下；关掉后云端不再变动，本机数据不受影响'),
+                onChanged: (v) async {
+                  await cloud.setEnabled(v);
+                  if (!mounted) return;
+                  setState(() => _cloudSyncOn = v);
+                },
               ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          OutlinedButton.icon(
-            onPressed: _testing ? null : _test,
-            icon: const Icon(Icons.network_check_rounded, size: 18),
-            label: Text(_testing ? '测试中…' : '测试链接'),
-          ),
-          if (_testMessage != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                _testMessage!,
-                style: TextStyle(
-                    fontSize: 13,
-                    color: _testOk
-                        ? Colors.green.shade700
-                        : theme.colorScheme.error),
-              ),
-            ),
-          const SizedBox(height: 8),
-          Text(
-            'Key 只存在这台手机上。把 APK 发给朋友时，对方填自己的 Key。',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
-          ),
-          const Divider(height: 28),
-
-          // ——— 云同步 ———
-          Text('云同步', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 8),
-          ListenableBuilder(
-            listenable: CloudSync.instance,
-            builder: (context, _) {
-              final cloud = CloudSync.instance;
-              final active = _cloudSyncOn && cloud.hasPassphrase;
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _cloudSyncOn,
-                    title: const Text('开启云同步'),
-                    subtitle: const Text(
-                        '聊天记忆备份到云端你自己的口令目录下；关掉后云端不再变动，本机数据不受影响'),
-                    onChanged: (v) async {
-                      await cloud.setEnabled(v);
-                      if (!mounted) return;
-                      setState(() => _cloudSyncOn = v);
-                    },
-                  ),
-                  if (active) ...[
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.cloud_done_outlined),
-                      title: const Text('已开启同步'),
-                      subtitle:
-                          Text('最后同步：${_fmtTime(cloud.lastSyncAt)}'),
-                    ),
-                    // R10：云端没读到数据但本机有历史时，必须给出可判别状态，
-                    // 不许显示成空库，也不许静默继续。两个可能原因一起说，
-                    // 并明确告诉用户"本机记忆完好、没有被改动"。
-                    if (cloud.dirMismatch)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 10),
-                        child: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: theme.colorScheme.errorContainer,
-                            borderRadius: BorderRadius.circular(8),
+              if (active) ...[
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.cloud_done_outlined),
+                  title: const Text('已开启同步'),
+                  subtitle: Text('最后同步：${_fmtTime(cloud.lastSyncAt)}'),
+                ),
+                // R10：云端没读到数据但本机有历史时，必须给出可判别状态，
+                // 不许显示成空库，也不许静默继续。两个可能原因一起说，
+                // 并明确告诉用户"本机记忆完好、没有被改动"。
+                if (cloud.dirMismatch)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.errorContainer,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            cloud.lastError ?? CloudSync.cloudEmptyMessage(),
+                            style: TextStyle(
+                                color: theme.colorScheme.onErrorContainer),
                           ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 8,
                             children: [
-                              Text(
-                                cloud.lastError ?? CloudSync.cloudEmptyMessage(),
-                                style: TextStyle(
-                                    color: theme.colorScheme.onErrorContainer),
+                              TextButton(
+                                onPressed: _cloudChangePassphrase,
+                                child: const Text('核对口令（一字不差）'),
                               ),
-                              const SizedBox(height: 8),
-                              Wrap(
-                                spacing: 8,
-                                children: [
-                                  TextButton(
-                                    onPressed: _cloudChangePassphrase,
-                                    child: const Text('核对口令（一字不差）'),
-                                  ),
-                                  TextButton(
-                                    onPressed: () async {
-                                      // S5⑤ 换机出口：只有用户明确走这条才允许按新库处理。
-                                      // 先强提示核对口令并让用户重新输入，全程不查服务端。
-                                      final confirmed =
-                                          await showDialog<bool>(
-                                        context: context,
-                                        builder: (_) => AlertDialog(
-                                          title: const Text('我在旧手机上有记录'),
-                                          content: const Text(
-                                            '请确认旧手机上的同步口令一字不差（含大小写、空格）。'
-                                            '下一步会让你重新输入口令，并按新库处理本机记忆。'
-                                            '本机记忆完好，不会被删除。',
-                                          ),
-                                          actions: [
-                                            TextButton(
-                                                onPressed: () =>
-                                                    Navigator.pop(context, false),
-                                                child: const Text('取消')),
-                                            FilledButton(
-                                                onPressed: () =>
-                                                    Navigator.pop(context, true),
-                                                child: const Text('已核对，继续')),
-                                          ],
-                                        ),
-                                      );
-                                      if (confirmed != true || !mounted) return;
-                                      await CloudSync.instance
-                                          .acknowledgeNewLibrary();
-                                      if (!mounted) return;
-                                      await _cloudChangePassphrase();
-                                      if (!mounted) return;
-                                      await _cloudAlign();
-                                    },
-                                    child: const Text('我在旧手机上有记录'),
-                                  ),
-                                ],
+                              TextButton(
+                                onPressed: () async {
+                                  // S5⑤ 换机出口：只有用户明确走这条才允许按新库处理。
+                                  // 先强提示核对口令并让用户重新输入，全程不查服务端。
+                                  final confirmed = await showDialog<bool>(
+                                    context: context,
+                                    builder: (_) => AlertDialog(
+                                      title: const Text('我在旧手机上有记录'),
+                                      content: const Text(
+                                        '请确认旧手机上的同步口令一字不差（含大小写、空格）。'
+                                        '下一步会让你重新输入口令，并按新库处理本机记忆。'
+                                        '本机记忆完好，不会被删除。',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text('取消')),
+                                        FilledButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text('已核对，继续')),
+                                      ],
+                                    ),
+                                  );
+                                  if (confirmed != true || !mounted) return;
+                                  await CloudSync.instance
+                                      .acknowledgeNewLibrary();
+                                  if (!mounted) return;
+                                  await _cloudChangePassphrase();
+                                  if (!mounted) return;
+                                  await _cloudAlign();
+                                },
+                                child: const Text('我在旧手机上有记录'),
                               ),
                             ],
                           ),
-                        ),
+                        ],
                       ),
-                    if (cloud.status == SyncStatus.syncing)
-                      const Padding(
-                        padding: EdgeInsets.only(bottom: 8),
-                        child: Row(
-                          children: [
-                            SizedBox(
-                                width: 14,
-                                height: 14,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2)),
-                            SizedBox(width: 10),
-                            Text('正在同步…'),
-                          ],
-                        ),
-                      ),
-                    Row(
+                    ),
+                  ),
+                if (cloud.status == SyncStatus.syncing)
+                  const Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Row(
                       children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _cloudBusy ? null : _cloudAlign,
-                            icon: const Icon(Icons.sync_outlined, size: 18),
-                            label: const Text('对齐云端'),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _cloudBusy ? null : _cloudRestore,
-                            icon: const Icon(Icons.restore_outlined, size: 18),
-                            label: const Text('从云端恢复'),
-                          ),
-                        ),
+                        SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2)),
+                        SizedBox(width: 10),
+                        Text('正在同步…'),
                       ],
                     ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _cloudBusy ? null : _cloudChangePassphrase,
-                            icon: const Icon(Icons.key_outlined, size: 18),
-                            label: const Text('修改口令'),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _cloudBusy ? null : _cloudDisable,
-                            icon: const Icon(Icons.cloud_off_outlined, size: 18),
-                            label: const Text('关闭同步'),
-                          ),
-                        ),
-                      ],
+                  ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _cloudBusy ? null : _cloudAlign,
+                      icon: const Icon(Icons.sync_outlined, size: 18),
+                      label: const Text('对齐云端'),
                     ),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      value: _cloudProactiveOn,
-                      title: const Text('云端按时送达'),
-                      // 这句是功能的真实边界，**必须原样**（不许美化、不许省）：
-                      // 云端只有拿到 App 预先生成的候选句，才"带记忆"。
-                      subtitle: const Text(
-                          '云端靠 App 预先生成的话，最近 48 小时内打开过 App 才带记忆'),
-                      onChanged: _cloudBusy
-                          ? null
-                          : (v) => _cloudProactiveToggle(v),
+                    OutlinedButton.icon(
+                      onPressed: _cloudBusy ? null : _cloudRestore,
+                      icon: const Icon(Icons.restore_outlined, size: 18),
+                      label: const Text('从云端恢复'),
                     ),
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.verified_user_outlined),
-                      title: Text('授权码（${_hasAuthCode ? '已设置' : '未设置'}）'),
-                      subtitle: const Text(
-                          '授权码用于销毁云母库等高危操作，只在 App 本机保存'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: _cloudBusy ? null : _cloudAuthCode,
+                    OutlinedButton.icon(
+                      onPressed: _cloudBusy ? null : _cloudChangePassphrase,
+                      icon: const Icon(Icons.key_outlined, size: 18),
+                      label: const Text('修改口令'),
                     ),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: theme.colorScheme.error,
-                          side: BorderSide(color: theme.colorScheme.error),
-                          minimumSize: const Size.fromHeight(44),
-                        ),
-                        onPressed: _cloudBusy ? null : _cloudDestroy,
-                        icon: const Icon(Icons.local_fire_department_outlined,
-                            size: 18),
-                        label: const Text('销毁云母库'),
-                      ),
-                    ),
-                    Text(
-                      '云端记忆库只增不删：本地删除不影响云端历史；'
-                      '「对齐云端」会先把本地缺的补上去、再把云端缺的补回来，'
-                      '两边对齐后一致。发消息成功后 5 分钟也会自动推送一次，'
-                      'App 退到后台时同样补推。恢复只补缺、不删除本机任何记录。'
-                      '销毁云母库是唯一清空云端的入口，需要授权码确认。',
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: Colors.grey.shade600, height: 1.6),
-                    ),
-                  ] else ...[
-                    TextField(
-                      controller: _passphraseCtl,
-                      enabled: !_cloudBusy,
-                      obscureText: !_passphraseVisible,
-                      decoration: InputDecoration(
-                        hintText: '设置同步口令（至少 8 位）',
-                        prefixIcon: const Icon(Icons.key, size: 20),
-                        suffixIcon: IconButton(
-                          icon: Icon(_passphraseVisible
-                              ? Icons.visibility_outlined
-                              : Icons.visibility_off_outlined),
-                          onPressed: () => setState(
-                              () => _passphraseVisible = !_passphraseVisible),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    FilledButton.icon(
-                      onPressed: _cloudBusy ? null : _cloudEnable,
-                      icon: const Icon(Icons.cloud_upload_outlined, size: 18),
-                      label: Text(_cloudBusy ? '正在开启…' : '开启同步'),
-                      style: FilledButton.styleFrom(
-                          minimumSize: const Size.fromHeight(48)),
-                    ),
-                    if (cloud.lastError != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8),
-                        child: Text(
-                          cloud.lastError!,
-                          style: TextStyle(
-                              fontSize: 13, color: theme.colorScheme.error),
-                        ),
-                      ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '口令是你云端记忆的唯一凭证。换手机或重装 App 后，输入同一个口令'
-                      '再点「对齐云端」就能找回云端记忆。云端记忆库只增不删，'
-                      '本地删除不影响云端历史。口令忘了云端就找不回'
-                      '（手机本地记录不受影响），请像记密码一样记住它。',
-                      style: theme.textTheme.bodySmall
-                          ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+                    OutlinedButton.icon(
+                      onPressed: _cloudBusy ? null : _cloudDisable,
+                      icon: const Icon(Icons.cloud_off_outlined, size: 18),
+                      label: const Text('关闭同步'),
                     ),
                   ],
-                ],
-              );
-            },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.verified_user_outlined),
+                  title: Text('授权码（${_hasAuthCode ? '已设置' : '未设置'}）'),
+                  subtitle: const Text('授权码用于销毁云母库等高危操作，只在 App 本机保存'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _cloudBusy ? null : _cloudAuthCode,
+                ),
+                Text(
+                  '云端记忆库只增不删：本地删除不影响云端历史；'
+                  '「对齐云端」会先把本地缺的补上去、再把云端缺的补回来，'
+                  '两边对齐后一致。发消息成功后 5 分钟也会自动推送一次，'
+                  'App 退到后台时同样补推。恢复只补缺、不删除本机任何记录。'
+                  '销毁云母库是唯一清空云端的入口，需要授权码确认。',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+                ),
+              ] else ...[
+                TextField(
+                  controller: _passphraseCtl,
+                  enabled: !_cloudBusy,
+                  obscureText: !_passphraseVisible,
+                  decoration: InputDecoration(
+                    hintText: '设置同步口令（至少 8 位）',
+                    prefixIcon: const Icon(Icons.key, size: 20),
+                    suffixIcon: IconButton(
+                      icon: Icon(_passphraseVisible
+                          ? Icons.visibility_outlined
+                          : Icons.visibility_off_outlined),
+                      onPressed: () => setState(
+                          () => _passphraseVisible = !_passphraseVisible),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                FilledButton.icon(
+                  onPressed: _cloudBusy ? null : _cloudEnable,
+                  icon: const Icon(Icons.cloud_upload_outlined, size: 18),
+                  label: Text(_cloudBusy ? '正在开启…' : '开启同步'),
+                  style: FilledButton.styleFrom(
+                      minimumSize: const Size.fromHeight(48)),
+                ),
+                if (cloud.lastError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      cloud.lastError!,
+                      style: TextStyle(
+                          fontSize: 13, color: theme.colorScheme.error),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+                Text(
+                  '口令是你云端记忆的唯一凭证。换手机或重装 App 后，输入同一个口令'
+                  '再点「对齐云端」就能找回云端记忆。云端记忆库只增不删，'
+                  '本地删除不影响云端历史。口令忘了云端就找不回'
+                  '（手机本地记录不受影响），请像记密码一样记住它。',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+      const Divider(height: 28),
+      Text('导出本机数据', style: theme.textTheme.titleMedium),
+      const SizedBox(height: 4),
+      Text(
+        '导出后可通过系统分享保存文件。「只导出记忆」不含聊天原文。',
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+      ),
+      const SizedBox(height: 10),
+      // 两个按钮并列：同一份本机数据，两套白名单（C6/C7 说的就是这两份的差值）。
+      Wrap(
+        spacing: 8,
+        runSpacing: 4,
+        children: [
+          OutlinedButton.icon(
+            onPressed: _exporting ? null : () => _export(ExportMode.full),
+            icon: const Icon(Icons.download_rounded, size: 18),
+            label: const Text('导出全部'),
           ),
-          const Divider(height: 28),
-
-          // ——— 导出（R3）———
-          Text('导出与备份', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 4),
-          Text(
-            '导出的是这台手机上现在有的东西：文件写在手机的文档目录里，可以自己分享出去。'
-            '「只导出记忆」不含聊天原文，适合把记忆带走、不把私房话带走。',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+          OutlinedButton.icon(
+            onPressed: _exporting ? null : () => _export(ExportMode.memoryOnly),
+            icon: const Icon(Icons.psychology_outlined, size: 18),
+            label: const Text('只导出记忆'),
           ),
-          const SizedBox(height: 10),
-          // 两个按钮并列：同一份本机数据，两套白名单（C6/C7 说的就是这两份的差值）。
-          Row(
+        ],
+      ),
+      if (_exporting)
+        const Padding(
+          padding: EdgeInsets.only(top: 10),
+          child: Row(
             children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _exporting ? null : () => _export(ExportMode.full),
-                  icon: const Icon(Icons.download_rounded, size: 18),
-                  label: const Text('导出全部'),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed:
-                      _exporting ? null : () => _export(ExportMode.memoryOnly),
-                  icon: const Icon(Icons.psychology_outlined, size: 18),
-                  label: const Text('只导出记忆'),
-                ),
-              ),
+              SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+              SizedBox(width: 10),
+              Text('正在导出…'),
             ],
           ),
-          if (_exporting)
-            const Padding(
-              padding: EdgeInsets.only(top: 10),
-              child: Row(
-                children: [
-                  SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2)),
-                  SizedBox(width: 10),
-                  Text('正在导出…'),
-                ],
-              ),
-            ),
-          // C5 的真实文案（三种正常分支 + 失败分支）常驻显示，不靠一闪而过的提示。
-          if (_exportStatus != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 10),
-              child: Text(
-                _exportStatus!,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: Colors.grey.shade700, height: 1.6),
-              ),
-            ),
-          const Divider(height: 28),
-
-          // ——— 聊天与记忆 ———
-          Text('聊天与记忆', style: theme.textTheme.titleMedium),
-          const SizedBox(height: 4),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.wallpaper_rounded),
-            title: const Text('聊天背景'),
-            subtitle: const Text('预设渐变，或用自己相册里的图'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.pushNamed(context, '/background'),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.edit_note_rounded),
-            title: const Text('她学到的说法'),
-            subtitle: Text(
-              context.watch<AppState>().styleExamples.isEmpty
-                  ? '长按她说的话，写一遍她该怎么说'
-                  : '${context.watch<AppState>().styleExamples.length} 条，长按消息可随时加',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.pushNamed(context, '/style-examples'),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.record_voice_over_rounded),
-            title: const Text('她的说话方式档案'),
-            subtitle: Text(_styleProfileStatus(
-                context.watch<AppState>().styleProfile)),
-            // 只读状态行：档案是机器蒸馏产物，不做编辑入口
-            // （与「人设定稿不改」同一精神），攒够修改自动更新。
-          ),
-          Padding(
-            padding: const EdgeInsets.only(left: 56, bottom: 4),
-            child: Text(
-              '节奏适配：档案只用来对齐句长和节奏，不模仿对方的用词、情绪和态度——'
-              '她和 TA 是两个人；和「她的自我」冲突时，以她自己的说法为准。',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: Colors.grey.shade600, height: 1.6),
-            ),
-          ),
-          const Divider(height: 24),
-          Text('TA 用表情：${EmojiKit.labelOf(_emojiLevel)}'),
-          DropdownButton<int>(
-            value: _emojiLevel,
-            isExpanded: true,
-            items: const [
-              DropdownMenuItem(value: 0, child: Text('不用表情')),
-              DropdownMenuItem(value: 1, child: Text('偶尔用')),
-              DropdownMenuItem(value: 2, child: Text('常用（默认，回复生动）')),
-            ],
-            onChanged: (v) => setState(() => _emojiLevel = v ?? 1),
-          ),
-          const SizedBox(height: 12),
-          Text('记忆窗口：最近 $_contextWindow 句'),
-          Slider(
-            value: _contextWindow.toDouble(),
-            min: 200,
-            max: 5000,
-            divisions: 24,
-            label: '$_contextWindow 句',
-            onChanged: (v) => setState(() => _contextWindow = v.round()),
-          ),
-          Text(
-            '窗口内的对话都记得住；更早的会由 AI 压成摘要长期带着，不会丢，也不会每次把上千句原文全发出去。',
+        ),
+      // C5 的真实文案（三种正常分支 + 失败分支）常驻显示，不靠一闪而过的提示。
+      if (_exportStatus != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Text(
+            _exportStatus!,
             style: theme.textTheme.bodySmall
-                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+                ?.copyWith(color: Colors.grey.shade700, height: 1.6),
           ),
-          const SizedBox(height: 12),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _manualEnabled,
-            title: const Text('记录我的行为习惯'),
-            subtitle: const Text('AI 判断 + 内置规则，只记稳定的习惯'),
-            onChanged: (v) => setState(() => _manualEnabled = v),
-          ),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _moodEnabled,
-            title: const Text('她会有情绪'),
-            subtitle: const Text(
-                '一直不理她会生气、会甩个表情不说话，得哄；哄好了会自己下台阶。关掉就永远好脾气'),
-            onChanged: (v) => setState(() => _moodEnabled = v),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.menu_book_outlined),
-            title: const Text('查看行为记录手册'),
-            subtitle: const Text('能看到记了什么，也能逐条删'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.pushNamed(context, '/manual'),
-          ),
-          const Divider(height: 28),
-
-          // ——— 主动消息 ———
-          Text('主动消息', style: theme.textTheme.titleMedium),
-          SwitchListTile(
-            contentPadding: EdgeInsets.zero,
-            value: _s.enabled,
-            title: const Text('偶尔让 TA 主动找我'),
-            subtitle: const Text('预约本地通知，点开后现场生成一句话'),
-            onChanged: (v) => setState(() => _s = ProactiveSettings(
-                  enabled: v,
-                  perDay: _s.perDay,
-                  startHour: _s.startHour,
-                  endHour: _s.endHour,
-                )),
-          ),
-          if (_s.enabled) ...[
-            Row(
-              children: [
-                const Text('每天'),
-                const SizedBox(width: 12),
-                DropdownButton<int>(
-                  value: _s.perDay,
-                  items: const [
-                    DropdownMenuItem(value: 1, child: Text('1 条')),
-                    DropdownMenuItem(value: 2, child: Text('2 条')),
-                    DropdownMenuItem(value: 3, child: Text('3 条')),
-                  ],
-                  onChanged: (v) => setState(() => _s = ProactiveSettings(
-                        enabled: true,
-                        perDay: v ?? 1,
-                        startHour: _s.startHour,
-                        endHour: _s.endHour,
-                      )),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                const Text('时段'),
-                const SizedBox(width: 12),
-                DropdownButton<int>(
-                  value: _s.startHour,
-                  items: _hours(0, 22),
-                  onChanged: (v) => setState(() => _s = ProactiveSettings(
-                        enabled: true,
-                        perDay: _s.perDay,
-                        startHour: v ?? 9,
-                        endHour:
-                            _s.endHour > (v ?? 9) ? _s.endHour : (v ?? 9) + 1,
-                      )),
-                ),
-                const Text(' — '),
-                DropdownButton<int>(
-                  value: _s.endHour > 24 ? 24 : _s.endHour,
-                  items: _hours(1, 24),
-                  onChanged: (v) => setState(() => _s = ProactiveSettings(
-                        enabled: true,
-                        perDay: _s.perDay,
-                        startHour: _s.startHour,
-                        endHour: (v ?? 23) > _s.startHour
-                            ? (v ?? 23)
-                            : _s.startHour + 1,
-                      )),
-                ),
-              ],
-            ),
-          ],
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.monitor_heart_outlined),
-            title: const Text('主动消息诊断'),
-            subtitle: Text(ProactiveDiag.summary(_diag)),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.pushNamed(context, '/diagnostics').then((_) {
-              if (!mounted) return;
-              _load(); // 从诊断页回来刷新摘要，证据可能刚被刷新过
-            }),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.psychology_outlined),
-            title: const Text('她的自我'),
-            subtitle: const Text('她长出来的想法 · 可查看来源、可删'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const SelfPage()),
-            ),
-          ),
-          const Divider(height: 28),
-
-          Text('说话的随机度：${_temperature.toStringAsFixed(2)}',
-              style: theme.textTheme.titleMedium),
-          Slider(
-            value: _temperature.clamp(0.4, 1.0),
-            min: 0.4,
-            max: 1.0,
-            divisions: 6,
-            label: _temperature.toStringAsFixed(2),
-            onChanged: (v) => setState(() => _temperature = v),
-          ),
-          Text(
-            '默认 0.8，上限锁在 1.0——再高模型容易输出前言不搭后语的大段胡话。'
-            '旧版存过的高数值会自动降下来。',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            '对话风格会在后台自动学习（只学说话方式，不记聊天内容），只存本机，不用管它。'
-            '想直接纠正她，就在聊天里长按她说的话。',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
-          ),
-          const SizedBox(height: 20),
-          FilledButton(
-            onPressed: _saving ? null : _save,
-            child: _saving
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('保存设置'),
-          ),
-          const Divider(height: 36),
-
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.edit_outlined),
-            title: const Text('修改头像与昵称'),
-            subtitle: const Text('只改外观；性格定稿后不可改'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.pushNamed(context, '/appearance'),
-          ),
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.article_outlined),
-            title: const Text('查看人设档案（只读）'),
-            subtitle: const Text('定稿后不能改'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.pushNamed(context, '/home'),
-          ),
+        ),
+      const Divider(height: 28),
+      ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        leading:
+            Icon(Icons.warning_amber_rounded, color: theme.colorScheme.error),
+        title: const Text('清理与重置'),
+        children: [
           ListTile(
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.delete_sweep_outlined),
@@ -1380,8 +1218,269 @@ class _SettingsPageState extends State<SettingsPage> {
             subtitle: const Text('人设、聊天、摘要、行为手册一起清空，配置保留；可选同时销毁云端记忆'),
             onTap: _deleteCompanion,
           ),
-          const SizedBox(height: 24),
+          ListenableBuilder(
+            listenable: CloudSync.instance,
+            builder: (context, _) {
+              if (!_cloudSyncOn || !CloudSync.instance.hasPassphrase) {
+                return const SizedBox.shrink();
+              }
+              return ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.local_fire_department_outlined,
+                    color: theme.colorScheme.error),
+                title: Text('销毁云母库',
+                    style: TextStyle(color: theme.colorScheme.error)),
+                subtitle: const Text('清空云端记忆，需要授权码确认'),
+                onTap: _cloudBusy ? null : _cloudDestroy,
+              );
+            },
+          ),
         ],
+      ),
+    ];
+  }
+
+  List<Widget> _connectionSettings(BuildContext context) {
+    final theme = Theme.of(context);
+    return [
+      Text('DeepSeek API Key', style: theme.textTheme.titleMedium),
+      const SizedBox(height: 8),
+      TextField(
+        controller: _key,
+        obscureText: _obscure,
+        onChanged: (_) => setState(() {
+          _testOk = false;
+          _testMessage = null;
+        }),
+        decoration: InputDecoration(
+          hintText: 'sk-...',
+          suffixIcon: IconButton(
+            icon: Icon(_obscure
+                ? Icons.visibility_outlined
+                : Icons.visibility_off_outlined),
+            onPressed: () => setState(() => _obscure = !_obscure),
+          ),
+        ),
+      ),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        onPressed: _testing ? null : _test,
+        icon: const Icon(Icons.network_check_rounded, size: 18),
+        label: Text(_testing ? '测试中…' : '测试连接'),
+      ),
+      if (_testMessage != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text(
+            _testMessage!,
+            style: TextStyle(
+                fontSize: 13,
+                color:
+                    _testOk ? Colors.green.shade700 : theme.colorScheme.error),
+          ),
+        ),
+      const SizedBox(height: 8),
+      Text(
+        'Key 只存在这台手机上。把 APK 发给朋友时，对方填自己的 Key。',
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+      ),
+      const Divider(height: 28),
+      Text('说话的随机度：${_temperature.toStringAsFixed(2)}',
+          style: theme.textTheme.titleMedium),
+      Slider(
+        value: _temperature.clamp(0.4, 1.0),
+        min: 0.4,
+        max: 1.0,
+        divisions: 6,
+        label: _temperature.toStringAsFixed(2),
+        onChanged: (v) => setState(() => _temperature = v),
+      ),
+      Text(
+        '默认 0.8，上限锁在 1.0——再高模型容易输出前言不搭后语的大段胡话。'
+        '旧版存过的高数值会自动降下来。',
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+      ),
+      const SizedBox(height: 10),
+      Text(
+        '对话风格会在后台自动学习（只学说话方式，不记聊天内容），只存本机，不用管它。'
+        '想直接纠正她，就在聊天里长按她说的话。',
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+      ),
+    ];
+  }
+
+  List<Widget> _updateSettings(BuildContext context) {
+    final theme = Theme.of(context);
+    return [
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.system_update_alt_rounded),
+        title: Text('当前版本 $_versionText'),
+      ),
+      OutlinedButton.icon(
+        onPressed: _checking ? null : _checkUpdate,
+        icon: _checking
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2))
+            : const Icon(Icons.refresh_rounded, size: 18),
+        label: Text(_checking ? '正在检查…' : '检查更新'),
+        style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+      ),
+      if (_updateStatus != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 10),
+          child: Text(_updateStatus!,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: Colors.grey.shade700)),
+        ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: _autoUpdate,
+        title: const Text('启动时自动检查更新'),
+        subtitle: const Text('只检查、不自动下载；发现新版会在首页显示提示'),
+        onChanged: (v) => setState(() => _autoUpdate = v),
+      ),
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        value: _silentUpdate,
+        title: const Text('后台静默升级'),
+        subtitle: const Text('启动后在后台查版本、下安装包，不挡聊天也不弹窗；下好才提示一下，装不装你说了算'),
+        onChanged: (v) => setState(() => _silentUpdate = v),
+      ),
+      const Padding(
+        padding: EdgeInsets.only(top: 4, bottom: 6),
+        child: SilentUpdateBanner(showProgress: true),
+      ),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loaded) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    final colors = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: const Text('设置')),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 20),
+        keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _SettingsSection(
+              icon: Icons.palette_outlined,
+              title: '外观与人设',
+              description: '头像、昵称、聊天背景、人设档案',
+              children: _appearanceSettings(context),
+            ),
+            _SettingsSection(
+              icon: Icons.forum_outlined,
+              title: '聊天与记忆',
+              description: '她的自我、说话方式、情绪、记忆窗口',
+              children: _chatSettings(context),
+            ),
+            _SettingsSection(
+              icon: Icons.notifications_outlined,
+              title: '主动消息',
+              description: '本地提醒、云端送达、通知诊断',
+              children: _proactiveSettings(context),
+            ),
+            _SettingsSection(
+              icon: Icons.cloud_outlined,
+              title: '同步与导出',
+              description: '云端备份、换机恢复、导出与清理',
+              children: _dataSettings(context),
+            ),
+            _SettingsSection(
+              icon: Icons.tune_rounded,
+              title: '连接与模型',
+              description: 'DeepSeek API Key、回复随机度',
+              children: _connectionSettings(context),
+            ),
+            _SettingsSection(
+              icon: Icons.system_update_alt_rounded,
+              title: '版本与更新',
+              description: '检查更新、后台下载',
+              children: _updateSettings(context),
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Material(
+          color: colors.surface,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+            child: FilledButton(
+              onPressed: _saving ? null : _save,
+              child: _saving
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('保存设置'),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SettingsSection extends StatelessWidget {
+  const _SettingsSection({
+    required this.icon,
+    required this.title,
+    required this.description,
+    required this.children,
+  });
+
+  final IconData icon;
+  final String title;
+  final String description;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    const shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.all(Radius.circular(16)),
+    );
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      elevation: 0,
+      color: colors.surfaceContainerLow,
+      shape: shape,
+      clipBehavior: Clip.antiAlias,
+      child: ExpansionTile(
+        shape: shape,
+        collapsedShape: shape,
+        tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        expandedCrossAxisAlignment: CrossAxisAlignment.stretch,
+        leading: DecoratedBox(
+          decoration: BoxDecoration(
+            color: colors.secondaryContainer,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(9),
+            child: Icon(icon, size: 21, color: colors.onSecondaryContainer),
+          ),
+        ),
+        title: Text(title, style: theme.textTheme.titleMedium),
+        subtitle: Text(description,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: colors.onSurfaceVariant)),
+        children: children,
       ),
     );
   }
