@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
@@ -7,10 +8,12 @@ import '../data/db_helper.dart';
 import '../data/prefs.dart';
 import '../models/chat_background.dart';
 import '../models/companion.dart';
+import '../models/journal.dart';
 import '../models/life_state.dart';
 import '../models/memory_chunk.dart';
 import '../models/message.dart';
 import '../models/persona_space.dart';
+import '../models/self_models.dart';
 import '../models/speech_profile.dart';
 import '../models/style_example.dart';
 import '../models/style_profile.dart';
@@ -21,8 +24,12 @@ import '../services/context_builder.dart';
 import '../services/deepseek.dart';
 import '../services/memory_service.dart';
 import '../services/mood_service.dart';
+import '../services/near_term_note_service.dart';
 import '../services/persona_analyst.dart';
+import '../services/prompt_budget.dart';
 import '../services/proactive_service.dart';
+import '../services/self_prompt.dart';
+import '../services/self_service.dart';
 import '../services/speech_profile_service.dart';
 import '../services/style_profile_service.dart';
 import '../services/user_manual.dart';
@@ -136,6 +143,19 @@ class AppState extends ChangeNotifier {
   Timer? _styleDistillTimer;
   bool _distillingStyle = false;
 
+  /// R2 自我认知编排器（有副作用）；纯函数在 SelfPrompt / SelfGuard。
+  final SelfService _self = SelfService();
+  final NearTermNoteService _nearTerm = NearTermNoteService();
+
+  /// 当前生效的 self 段文本（≤360 字），注入 prompt 的【我知道我是谁】。
+  String selfBlock = '';
+
+  /// 生效的自生长事实（已排除本机删除清单），设置页列表用。
+  List<SelfFact> get selfFacts => _self.effectiveFacts;
+
+  /// 自生长事实是否带「涉及你的现实生活」标记（展示期现算，恒开不可关）。
+  bool isRealLifeFact(SelfFact f) => SelfGuard.isRealLifeFact(f.text);
+
   Future<void> load() async {
     configured = await Prefs.configured();
     contextWindow = await Prefs.contextLimit();
@@ -168,6 +188,10 @@ class AppState extends ChangeNotifier {
     await _refreshLife();
     await _loadMood();
 
+    // R2：加载 self 缓存 + 本机删除清单（失败静默，绝不阻塞首帧）。
+    await _self.load();
+    selfBlock = _self.profile.text;
+
     notifyListeners();
 
     // 云同步：启动后只恢复开关/口令状态，**不自动拉取**——
@@ -178,6 +202,75 @@ class AppState extends ChangeNotifier {
     // 还没蒸馏过）→ 启动一分钟后补一轮蒸馏。同步方法内部排防抖 Timer，
     // 失败静默、不阻塞首帧。
     _maybeDistillStyle(coldStart: true);
+
+    // R2 冷启动重蒸检查：7 天未重蒸 + 可写时才跑；在后台做，不阻塞首帧。
+    unawaited(_maybeSelfDistill());
+  }
+
+  /// R2 重蒸：从最近对话 + 人设投影生成 self_fact + 聚合 self。
+  /// 过闸 / 三重拦截 / cap 都在 SelfService 内；这里只收集材料与触发推送。
+  Future<void> _maybeSelfDistill({bool force = false}) async {
+    try {
+      final c = companion;
+      if (c == null) return;
+      final key = await Prefs.apiKey();
+      if (key.trim().isEmpty) return;
+
+      // 能力门禁：由 CloudSync 复用 T01 判定，不满足就只读、什么都不写。
+      if (!CloudSync.instance.canWriteSelfNow()) return;
+
+      // 7 天周期（force 仅供手动触发 / 测试使用）。
+      final last = await Prefs.selfLastDistillAt();
+      if (!force && last > 0 &&
+          DateTime.now().millisecondsSinceEpoch - last <
+              const Duration(days: 7).inMilliseconds) {
+        return;
+      }
+
+      final spaceJson = c.personaSpace.isNotEmpty
+          ? c.personaSpace
+          : jsonEncode(<String, dynamic>{
+              'fields': <String, String>{
+                'identity': c.name,
+                'personality': c.persona,
+              },
+            });
+      // 最近 30 句原文，带 message key（溯源锁）。
+      final recent = messages
+          .where((m) => m.content.trim().isNotEmpty)
+          .skip(messages.length > 30 ? messages.length - 30 : 0)
+          .map((m) => '${journalKeyForMessage(m.role, m.createdAt)} ${m.content}')
+          .toList();
+      final nearNotes = notes
+          .where((n) => n.category == PromptBudget.nearTermCategory)
+          .map((n) => n.content)
+          .toList();
+
+      // 云端探测结果：从 CloudSync 最近一次对齐推断（空原文视为 cap=1/无敏感 type）。
+      final lines = await _self.maybeDistill(
+        apiKey: key,
+        personaSpace: spaceJson,
+        recentLines: recent,
+        nearNotes: nearNotes,
+        cloudTypes: const <String>{},
+        cloudSelfCap: 1,
+      );
+      selfBlock = _self.profile.text;
+      if (lines.isNotEmpty) {
+        notifyListeners();
+        // 生成的行交给云同步按 key 追加（发送走既有防抖，append-only 安全）。
+        CloudSync.instance.scheduleUpload();
+      }
+    } catch (_) {
+      // 重蒸失败静默：她在离线状态仍能用已有 self 回答（B5）。
+    }
+  }
+
+  /// 删除一条自生长事实：本机即时生效（15 秒内 prompt 不再出现），不碰 journal。
+  Future<void> deleteSelfFact(SelfFact fact) async {
+    await _self.deleteFact(fact);
+    selfBlock = _self.profile.text;
+    notifyListeners();
   }
 
   /// 云同步对齐 / 恢复完成后，把内存态从数据库重刷一遍
@@ -442,21 +535,25 @@ class AppState extends ChangeNotifier {
     Companion c, {
     required _Timing timing,
     String moodBlock = '',
-  }) async =>
-      ContextBuilder.buildSystem(
-        persona: c.persona,
-        notes: notes,
-        chunks: chunks,
-        window: contextWindow,
-        emojiLevel: await Prefs.emojiLevel(),
-        speech: speech,
-        appearance: _appearanceOf(c),
-        styleExamples: styleExamples,
-        styleProfile: styleProfile,
-        nowBlock: timing.nowBlock,
-        gapBlock: timing.gapBlock,
-        moodBlock: moodBlock,
-      );
+  }) async {
+    // T05：排序与近况占位全在 PromptBudget.pickNotes 内部，调用方**传原始顺序**，
+    // 绝不预排序（乱序是合法输入）。context_builder 内部调 pickNotes。
+    return ContextBuilder.buildSystem(
+      persona: c.persona,
+      notes: notes,
+      chunks: chunks,
+      window: contextWindow,
+      emojiLevel: await Prefs.emojiLevel(),
+      speech: speech,
+      appearance: _appearanceOf(c),
+      styleExamples: styleExamples,
+      styleProfile: styleProfile,
+      nowBlock: timing.nowBlock,
+      gapBlock: timing.gapBlock,
+      moodBlock: moodBlock,
+      selfBlock: selfBlock,
+    );
+  }
 
   Future<void> send(String text, {String? imagePath}) async {
     final c = companion;
@@ -626,6 +723,23 @@ class AppState extends ChangeNotifier {
           await Prefs.setSpeechProfile(learned.encode());
         }
       }
+
+      // R4 中期层：近况 note（当晚 20:00 后、当天没生成过时）。
+      // 时间/日期/限额全部在 NearTermNoteService 内判；失败静默，不挡回复。
+      final since = DateTime.now()
+          .subtract(Duration(days: NearTermNoteService.lookbackDays))
+          .millisecondsSinceEpoch;
+      final recentTexts = messages
+          .where((m) =>
+              m.createdAt >= since && m.content.trim().isNotEmpty)
+          .map((m) => '${m.fromUser ? '对方' : '她'}：${m.content.trim()}')
+          .toList();
+      final nearAdded = await _nearTerm.maybeGenerate(
+        apiKey: key,
+        recentMessages: recentTexts,
+      );
+      if (nearAdded > 0) notes = await DbHelper.instance.userNotes();
+
       notifyListeners();
     } catch (_) {
       // 后台维护失败不打扰用户

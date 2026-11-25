@@ -404,4 +404,22 @@ void main() {
     expect(CloudSync.instance.uid, '');
     expect(CloudSync.instance.journalPath, '');
   });
+
+  test('R2 能力门禁保守化：从没对齐成功过 → 不给写 self 的能力', () async {
+    // 裁决（T05 A 阶段后）：未对齐时**不许**按 cap=1 最宽松放行——
+    // 我们此刻并不知道云端有没有别人的 self / 更高的 cap 行。
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await CloudSync.instance.bootstrap();
+    expect(await Prefs.cloudAlignedOnce(), 0);
+    expect(CloudSync.instance.canWriteSelfNow(), isFalse);
+  });
+
+  test('R2 能力门禁：落盘标志 > 0（成功对齐过）→ 放行', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{
+      // 键名是设计定的 cloud_aligned_once（值是毫秒时间戳，>0 即"对齐过"）
+      'cloud_aligned_once': 1730000000000,
+    });
+    await CloudSync.instance.bootstrap();
+    expect(CloudSync.instance.canWriteSelfNow(), isTrue);
+  });
 }

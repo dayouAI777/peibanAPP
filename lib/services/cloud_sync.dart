@@ -10,6 +10,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../data/db_helper.dart';
 import '../data/prefs.dart';
 import '../models/journal.dart';
+import '../models/self_models.dart';
+import 'capability.dart';
+import 'cloud_proactive_service.dart';
+import 'heartbeat_service.dart';
+import 'proactive_pool_store.dart';
+import 'self_service.dart';
 
 // R10 共用口径：与 peiban-core/src/r10.mjs 逐字一致。
 // 改动任何一个函数都要同步改 Node 端并跑对拍测试，否则手机和电脑
@@ -112,7 +118,7 @@ class PassphraseOutcome {
 /// 登录用云端的匿名会话（SDK 自动持久化），用户完全不感知账号；数据只走 PG
 /// 云存储。口令明文存本机 prefs（它只是同步凭证，泄露最多丢云端备份）。
 /// 全部异常吞掉转成中文状态——**同步失败永远不许阻塞聊天**。
-class CloudSync extends ChangeNotifier {
+class CloudSync extends ChangeNotifier implements ProactiveObjectClient {
   CloudSync._();
   static final CloudSync instance = CloudSync._();
 
@@ -182,6 +188,42 @@ class CloudSync extends ChangeNotifier {
   bool get signedIn => _uid.isNotEmpty;
   bool get isBusy => _busy;
 
+  /// 最近一次对齐读到的 journal 原文（仅内存，用来给重蒸做能力门禁探测）。
+  /// 换机/未对齐时为空 ⇒ 视为云端没有敏感 type，走本端 cap 判定。
+  String _lastCloudRaw = '';
+
+  /// 是否**成功读过至少一次云端**（`cloud_aligned_once`，落盘；启动时从 prefs 恢复）。
+  ///
+  /// 与 C5② 共用同一个标志（`docs/待裁决-T04.md` B 条裁决：判定式落在 §7.2
+  /// 「冷启动 / 未对齐时的判定」，两处同一个事实，不许各存一份）。
+  /// 为什么用落盘值而不是"本次运行"：对齐是**手动入口**（自动推送才顺带读云端），
+  /// 只认本次运行会让"上周对齐过、这周没点对齐"的用户永远长不出新自我。
+  bool _alignedOnce = false;
+
+  /// 本端此刻能否写 self（设计 §7.2 门禁）：探测云端 type + cap。
+  /// 复用 T01 的 [decideCapability]，不另写一套判定。
+  ///
+  /// ⚠️ 裁决（T05 A 阶段后）：**从来没对齐成功过 = 不给能力**。
+  /// 原来的写法是"`_lastCloudRaw` 为空 ⇒ 按 cap=1 放行"，那是"按最宽松处理"——
+  /// 可我们此刻根本不知道云端有没有别人的 `self` / 更高 cap 的行，放行等于替她赌一把。
+  /// 与 C5② 同一条原则：**不确定时选诚实那边**。
+  /// 代价只是"首次对齐完成前不长新自我"，而重蒸本来就是 7 天一次的活。
+  bool canWriteSelfNow() {
+    if (!_alignedOnce) return false;
+    final types = probeJournalTypes(_lastCloudRaw);
+    var cloudCap = 1;
+    for (final l in parseJournalLines(_lastCloudRaw)) {
+      if (l.type == JournalLine.typeSelf || l.type == JournalLine.typeState) {
+        final v = l.data['cap'];
+        if (v is int && v > cloudCap) cloudCap = v;
+      }
+    }
+    return decideCapability(
+      cloudTypes: types,
+      cloudSelfCap: cloudCap,
+    ).canWriteSelf;
+  }
+
   /// 最近一次失败的中文文案（给设置页直接显示）。
   String? lastError;
 
@@ -206,9 +248,73 @@ class CloudSync extends ChangeNotifier {
   /// 新前缀 = 匿名登录返回的 sub。客户端只读只写这一层。
   static String dirFor(String sub) => sub.trim();
 
+  /// 匿名登录返回的 `sub`（对象前缀）。未登录时为空串。
+  ///
+  /// 候选句池的对象路径必须与云母库同一层 `<sub>/`（两者同桶不同文件），
+  /// 所以这里只暴露 `_uid`，**不许**用口令现算一个前缀（R10 关洞后运行期
+  /// 只认匿名 uid，旧 `peiban-sync-v1` 前缀只在迁移脚本里读）。
+  String get sub => _uid;
+
   /// 云母库完整路径：`<sub>/journal.jsonl`。未登录时返回空串。
   String get journalPath =>
       _uid.isEmpty ? '' : '${dirFor(_uid)}/$journalFileName';
+
+  // ——— 对象读写通道（`ProactiveObjectClient` 的实现，T06） ———
+  //
+  // 复用**同一条带 token 的网关**（`app.storage.fromBucket`，与 journal 同一个桶），
+  // 不另开通道、不引入新依赖、不碰 `storages/object`：
+  // 候选句池只是同桶里的另一个小对象 `<sub>/proactive-<dayKey>.json`。
+  //
+  // 两个方法都**永不抛**：调用方（`CosObjectPoolStore`）按返回值处理，
+  // 而它上面还有一条纪律——"失败即今天没有，不许重试"。
+
+  @override
+  Future<String?> readObject(String path) async {
+    final p = path.trim();
+    if (p.isEmpty) return null;
+    try {
+      final app = await _ensureApp();
+      if (app == null) return null;
+      if (!await ensureSignedIn()) return null;
+      final bucket = app.storage.fromBucket(bucketId);
+      final down = await bucket.download(p);
+      // 404 / 权限不足一律按"没有"（MISSING 三态同口径：分不清真没有还是没权限）。
+      if (down.error != null) return null;
+      return utf8.decode(down.data ?? <int>[]);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<PoolWriteResult> writeObject(String path, String body) async {
+    final p = path.trim();
+    if (p.isEmpty) {
+      return const PoolWriteResult.failed('对象路径为空，不写');
+    }
+    try {
+      final app = await _ensureApp();
+      if (app == null) return const PoolWriteResult.failed('连不上云端');
+      if (!await ensureSignedIn()) {
+        return const PoolWriteResult.failed('连不上云端');
+      }
+      final bucket = app.storage.fromBucket(bucketId);
+      final up = await bucket.upload(
+        p,
+        utf8.encode(body),
+        options: PgStorageUploadOptions(
+          contentType: 'application/json',
+          upsert: true,
+        ),
+      );
+      if (up.error != null) {
+        return PoolWriteResult.failed(_storageMessage(up.error!, '写对象失败'));
+      }
+      return const PoolWriteResult.success();
+    } catch (e) {
+      return PoolWriteResult.failed('写对象失败：$e');
+    }
+  }
 
   /// 三态 + 本机可重建历史 → 动作（纯函数，与 Node classifyRead 一致）。
   ///
@@ -375,6 +481,7 @@ class CloudSync extends ChangeNotifier {
   Future<void> bootstrap() async {
     _passphrase = await Prefs.cloudPassphrase();
     _lastSyncAt = await Prefs.cloudLastSyncAt();
+    _alignedOnce = await Prefs.cloudAlignedOnce() > 0;
     _enabled = await Prefs.cloudSync();
     if (!_enabled) {
       _status = SyncStatus.off;
@@ -711,9 +818,14 @@ class CloudSync extends ChangeNotifier {
           ok: false, message: lastError ?? '连不上云端，请检查网络');
     }
     _busy = true;
+    // T07：同步会话的开/关只在这里翻。整段会话内 `HeartbeatService.writeState()`
+    // 才算"寄生在既有会话里"；会话外的写入一律 `not_in_sync_session` 且不落云
+    // （独立开会话写 state = 4 桶/天 = 1710 点/月，三个月打成半个月）。
+    HeartbeatService.beginSyncSession();
     try {
       return await _runLocked(app, doPush: doPush, doPull: doPull, verb: verb);
     } finally {
+      HeartbeatService.endSyncSession();
       _busy = false;
     }
   }
@@ -866,6 +978,7 @@ class CloudSync extends ChangeNotifier {
         cloudMissing = true;
       }
       _outcome = outcome;
+      _lastCloudRaw = raw; // R2 能力门禁探测用（内存缓存，R10 三态判定不受影响）
       final cloudLines = parseJournalLines(raw);
       final cloudKeys = cloudLines.map((l) => l.key).toSet();
       // 同 key 取 ts 最大的一行：给 speech/persona 的「内容变了才追加」比较用
@@ -878,60 +991,31 @@ class CloudSync extends ChangeNotifier {
       // ——— 2 & 3. 推送段：本地有、云端没有的 → 追加合并写回 ———
       var pushed = 0;
       if (doPush) {
+        // T07 · C 位置：`state` 的唯一写入点。**必须在 `_exportLocal()` 之前**——
+        // 这样心跳算出来的那一行当场被同一次会话推上去，不会出现"本机写了、云上
+        // 永远没有"的静默分叉。为什么不是 `_run()`、为什么不在 4 个时机各自埋点，
+        // 见 `heartbeat_service.dart` 顶部注释。
+        await HeartbeatService.instance.drainToJournal();
+
+        // T06：候选句池补货。**必须在这个会话里**（同一次呼吸）——只有手动对齐
+        // 才走 `align()`，防抖 5min / 退后台 / 重蒸后走的都是 `pushOnly()`
+        // → `scheduleUpload()`，占一天里的绝大多数。只挂 align() 的表现是
+        // "看起来接上了，但只有手动点对齐才补货"。
+        //
+        // 开关判定在服务内部（`cloudProactive != on` 时直接返回 `off`），
+        // 这样这里只有一行、也不会有人漏判。失败即今天没有，**不重试**。
+        if (sub.isNotEmpty) {
+          await CloudProactiveService.instance
+              .syncPool(client: this, sub: sub);
+        }
+
         final local = await _exportLocal();
-        final appended = <JournalLine>[];
-
-        void addUnique(
-            String key, String type, int ts, Map<String, dynamic> data) {
-          if (cloudKeys.contains(key)) return;
-          appended.add(JournalLine(type: type, key: key, ts: ts, data: data));
-        }
-
-        for (final m in local.messages) {
-          final role = m['role'];
-          final at = m['created_at'];
-          if (role is String && at is int) {
-            addUnique(journalKeyForMessage(role, at), JournalLine.typeMessage,
-                at, m);
-          }
-        }
-        for (final n in local.notes) {
-          final content = n['content'];
-          if (content is! String || content.trim().isEmpty) continue;
-          final cat = n['category'] is String ? n['category'] as String : '';
-          final at = n['created_at'] is int ? n['created_at'] as int : 0;
-          addUnique(journalKeyForNote(cat, content), JournalLine.typeNote, at,
-              n);
-        }
-        for (final e in local.styleExamples) {
-          final original = e['original'];
-          final preferred = e['preferred'];
-          if (original is! String || preferred is! String) continue;
-          if (preferred.trim().isEmpty) continue;
-          final at = e['created_at'] is int ? e['created_at'] as int : 0;
-          addUnique(journalKeyForStyleExample(original, preferred),
-              JournalLine.typeStyleExample, at, e);
-        }
-        for (final c in local.memoryChunks) {
-          final summary = c['summary'];
-          if (summary is! String || summary.trim().isEmpty) continue;
-          final fromId = c['from_id'] is int ? c['from_id'] as int : 0;
-          final toId = c['to_id'] is int ? c['to_id'] as int : 0;
-          final at = c['created_at'] is int ? c['created_at'] as int : 0;
-          addUnique(
-              journalKeyForMemoryChunk(fromId, toId, summary),
-              JournalLine.typeMemoryChunk,
-              at,
-              c);
-        }
-        // speech / style_profile / persona：固定 key 的整对象记录。内容变了
-        // 就追加新行（读者取最新 ts 那行）；内容没变不追加，免得日志无限膨胀。
-        _pushSingleWinner(appended, cloudLatest, JournalLine.typeSpeechProfile,
-            journalKeySpeechProfile, local.speechProfile);
-        _pushSingleWinner(appended, cloudLatest, JournalLine.typeStyleProfile,
-            journalKeyStyleProfile, local.styleProfile);
-        _pushSingleWinner(appended, cloudLatest, JournalLine.typePersona,
-            journalKeyPersona, local.companion);
+        final appended = buildAppendedLines(
+          local: local,
+          cloudKeys: cloudKeys,
+          cloudLatest: cloudLatest,
+          deletedHashes: (await SelfService.instanceDeletedHashes()).toSet(),
+        );
 
         if (appended.isNotEmpty) {
           final merged = mergeJournal(raw, appended);
@@ -965,6 +1049,9 @@ class CloudSync extends ChangeNotifier {
         Map<String, dynamic>? personaData;
         JournalLine? speechLine;
         JournalLine? styleProfileLine;
+        Map<String, dynamic>? selfProfileData;
+        final selfFactData = <Map<String, dynamic>>[];
+        final selfNoteData = <Map<String, dynamic>>[];
         for (final l in effective) {
           switch (l.type) {
             case JournalLine.typeMessage:
@@ -988,6 +1075,15 @@ class CloudSync extends ChangeNotifier {
             case JournalLine.typePersona:
               personaData = l.data;
               break;
+            case JournalLine.typeSelf:
+              selfProfileData = l.data;
+              break;
+            case JournalLine.typeSelfFact:
+              selfFactData.add(l.data);
+              break;
+            case JournalLine.typeSelfNote:
+              selfNoteData.add(l.data);
+              break;
           }
         }
         final counts = await DbHelper.instance.restoreCloudData(
@@ -998,6 +1094,21 @@ class CloudSync extends ChangeNotifier {
           messages: messages,
         );
         pulled = counts.values.fold(0, (a, b) => a + b);
+
+        // R2 自我认知：云端采用到本地缓存，**本机删除清单命中的 fact 直接过滤**
+        // （换机后清单丢失 ⇒ 可能复现，属已知限制 B10；同机删除永久生效 B6）。
+        if (selfProfileData != null ||
+            selfFactData.isNotEmpty ||
+            selfNoteData.isNotEmpty) {
+          // 读本机删除清单用于过滤（{sha16,ts}，只在本机）。
+          final deletedList = await _readDeletedList();
+          await SelfService.adoptFromCloud(
+            profileData: selfProfileData,
+            factData: selfFactData,
+            noteData: selfNoteData,
+            deleted: deletedList,
+          );
+        }
 
         // 说话方式画像：本地有就不动（那是本机静默学习的成果），
         // 本地没有才采用云端的。
@@ -1021,6 +1132,12 @@ class CloudSync extends ChangeNotifier {
       // ——— 5. 收尾 ———
       _lastSyncAt = DateTime.now().millisecondsSinceEpoch;
       await Prefs.setCloudLastSyncAt(_lastSyncAt);
+      // 只有走到这里才算"真的读到过云端"：上面的 blocked / error / 版本门禁
+      // 都提前 return 了，异常走 catch。两个消费者共用这一个标志（同一事实）：
+      // - 导出的 C5②（落盘 `cloud_aligned_once`，跨重启有效，避免狼来了）
+      // - R2 能力门禁（同一个标志，见 canWriteSelfNow）
+      await Prefs.setCloudAlignedOnce(_lastSyncAt);
+      _alignedOnce = true;
       _setStatus(SyncStatus.synced, null);
       return AlignResult(
         ok: true,
@@ -1036,14 +1153,117 @@ class CloudSync extends ChangeNotifier {
     }
   }
 
+  /// 从本机导出 + 云端已有 key → 这次要追加的行。**纯函数式（不碰网络）**，
+  /// 抽出来是为了让"上行请求体里到底有什么"能被断言：`bucket.upload` 的字节
+  /// 就是 `mergeJournal(raw, buildAppendedLines(...))` 的 utf8，所以只要断这个
+  /// 函数 + [mergeJournal]，断的就是请求体本身，不需要 fake transport。
+  ///
+  /// [nowMs] 仅供测试固定时间戳（默认 now）。
+  @visibleForTesting
+  static List<JournalLine> buildAppendedLines({
+    required LocalExport local,
+    required Set<String> cloudKeys,
+    required Map<String, JournalLine> cloudLatest,
+    required Set<String> deletedHashes,
+    int? nowMs,
+  }) {
+    final appended = <JournalLine>[];
+    final ts = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+
+    void addUnique(String key, String type, int at, Map<String, dynamic> data) {
+      if (cloudKeys.contains(key)) return;
+      appended.add(JournalLine(type: type, key: key, ts: at, data: data));
+    }
+
+    for (final m in local.messages) {
+      final role = m['role'];
+      final at = m['created_at'];
+      if (role is String && at is int) {
+        addUnique(
+            journalKeyForMessage(role, at), JournalLine.typeMessage, at, m);
+      }
+    }
+    for (final n in local.notes) {
+      final content = n['content'];
+      if (content is! String || content.trim().isEmpty) continue;
+      final cat = n['category'] is String ? n['category'] as String : '';
+      final at = n['created_at'] is int ? n['created_at'] as int : 0;
+      addUnique(journalKeyForNote(cat, content), JournalLine.typeNote, at, n);
+    }
+    for (final e in local.styleExamples) {
+      final original = e['original'];
+      final preferred = e['preferred'];
+      if (original is! String || preferred is! String) continue;
+      if (preferred.trim().isEmpty) continue;
+      final at = e['created_at'] is int ? e['created_at'] as int : 0;
+      addUnique(journalKeyForStyleExample(original, preferred),
+          JournalLine.typeStyleExample, at, e);
+    }
+    for (final c in local.memoryChunks) {
+      final summary = c['summary'];
+      if (summary is! String || summary.trim().isEmpty) continue;
+      final fromId = c['from_id'] is int ? c['from_id'] as int : 0;
+      final toId = c['to_id'] is int ? c['to_id'] as int : 0;
+      final at = c['created_at'] is int ? c['created_at'] as int : 0;
+      addUnique(journalKeyForMemoryChunk(fromId, toId, summary),
+          JournalLine.typeMemoryChunk, at, c);
+    }
+    // speech / style_profile / persona：固定 key 的整对象记录。内容变了
+    // 就追加新行（读者取最新 ts 那行）；内容没变不追加，免得日志无限膨胀。
+    _pushSingleWinner(appended, cloudLatest, JournalLine.typeSpeechProfile,
+        journalKeySpeechProfile, local.speechProfile, ts);
+    _pushSingleWinner(appended, cloudLatest, JournalLine.typeStyleProfile,
+        journalKeyStyleProfile, local.styleProfile, ts);
+    _pushSingleWinner(appended, cloudLatest, JournalLine.typePersona,
+        journalKeyPersona, local.companion, ts);
+
+    // R2 自我认知：self（单赢家）/ self_note / self_fact。
+    // 数据来自 SelfService 生成时已过 QuotaGate 闸门的缓存，这里只按 key 追加，
+    // 不再二次判定（"过同一闸"=复用同一份已过闸产物，不是再写一套限额）。
+    // 本机删除清单命中的 fact 不推（云母库只增不删，推上去就再也删不掉）。
+    if (local.selfProfile.isNotEmpty) {
+      _pushSingleWinner(appended, cloudLatest, JournalLine.typeSelf,
+          journalKeySelf, local.selfProfile, ts);
+    }
+    for (final f in local.selfFacts) {
+      final text = f['text'];
+      if (text is! String || text.trim().isEmpty) continue;
+      final hash = f['hash'] is String ? f['hash'] as String : '';
+      if (hash.isNotEmpty && deletedHashes.contains(hash)) continue;
+      final at = f['createdAt'] is int ? f['createdAt'] as int : 0;
+      addUnique(journalKeyForSelfFact(text), JournalLine.typeSelfFact, at, f);
+    }
+    for (final n in local.selfNotes) {
+      final text = n['text'];
+      if (text is! String || text.trim().isEmpty) continue;
+      final dayKey = n['dayKey'] is String ? n['dayKey'] as String : '';
+      final at = n['createdAt'] is int ? n['createdAt'] as int : 0;
+      addUnique(
+          journalKeyForSelfNote(dayKey, text), JournalLine.typeSelfNote, at, n);
+    }
+
+    // T07 · state（单赢家，key 固定 `state:v1`）：走同一条 `_pushSingleWinner`，
+    // 于是"内容变了才追加"的口径与 self / persona 完全一致——否则每次同步都会
+    // 追加一条，日志膨胀且绕开日限额。
+    //
+    // `local.state` 为空（从没写过心跳 / prefs 里是坏 JSON）时**什么都不做**：
+    // 这里最容易的坏法就是空值把整条推送带崩，而这是同步主路径。
+    if (local.state.isNotEmpty) {
+      _pushSingleWinner(appended, cloudLatest, JournalLine.typeState,
+          journalKeyState, local.state, ts);
+    }
+    return appended;
+  }
+
   /// speech / persona 这类「整对象一条」记录的推送判断，判定逻辑在
   /// [singleWinnerNeedsPush]（纯静态、可测）。
-  void _pushSingleWinner(
+  static void _pushSingleWinner(
     List<JournalLine> appended,
     Map<String, JournalLine> cloudLatest,
     String type,
     String key,
     Map<String, dynamic> data,
+    int ts,
   ) {
     if (!singleWinnerNeedsPush(
       cloudLatestData: cloudLatest[key]?.data,
@@ -1054,7 +1274,7 @@ class CloudSync extends ChangeNotifier {
     appended.add(JournalLine(
       type: type,
       key: key,
-      ts: DateTime.now().millisecondsSinceEpoch,
+      ts: ts,
       data: data,
     ));
   }
@@ -1064,6 +1284,18 @@ class CloudSync extends ChangeNotifier {
   /// id 是本地自增主键，别的设备没有意义；avatar_path 是本机沙盒路径，
   /// 跨设备必然不同。persona 行的 data 与整 map 比较都用这个口径，
   /// 否则「内容没变不追加」在跨设备场景永不收敛。纯静态、可测。
+  /// 读本机删除清单（{sha16,ts}），用于拉取时过滤已删事实。失败按空。
+  Future<DeletedFactList> _readDeletedList() async {
+    try {
+      final hashes = await SelfService.instanceDeletedHashes();
+      return DeletedFactList(
+        items: hashes.map((h) => DeletionEntry(sha16: h, ts: 0)).toList(),
+      );
+    } catch (_) {
+      return const DeletedFactList();
+    }
+  }
+
   static Map<String, dynamic> stripDeviceLocal(Map<String, dynamic>? m) =>
       m == null
           ? <String, dynamic>{}
@@ -1129,7 +1361,7 @@ class CloudSync extends ChangeNotifier {
 
   /// 从本地库 + 偏好导出待推送的全部记录。全部失败安全：
   /// 任何一块读不出来就置空，不抛。
-  Future<_LocalExport> _exportLocal() async {
+  Future<LocalExport> _exportLocal() async {
     final c = await DbHelper.instance.firstCompanion();
 
     Map<String, dynamic> companion = const <String, dynamic>{};
@@ -1186,7 +1418,20 @@ class CloudSync extends ChangeNotifier {
       } catch (_) {}
     }
 
-    return _LocalExport(
+    // R2 自我认知三块：读本机缓存（生成时已过闸、已排除删除清单），失败置空。
+    Map<String, dynamic> selfProfile = const <String, dynamic>{};
+    List<Map<String, dynamic>> selfFacts = const <Map<String, dynamic>>[];
+    List<Map<String, dynamic>> selfNotes = const <Map<String, dynamic>>[];
+    try {
+      selfProfile = await SelfService.cachedProfileData();
+      selfFacts = await SelfService.cachedFactData();
+      selfNotes = await SelfService.cachedNoteData();
+    } catch (_) {}
+
+    // T07 · state：读 HeartbeatService 过闸后写下的那一份载荷（失败置空 = 不推）。
+    final state = await readStatePayload();
+
+    return LocalExport(
       companion: companion,
       speechProfile: speech,
       styleProfile: styleProfile,
@@ -1194,7 +1439,144 @@ class CloudSync extends ChangeNotifier {
       styleExamples: examples,
       memoryChunks: chunks,
       messages: messages,
+      selfProfile: selfProfile,
+      selfFacts: selfFacts,
+      selfNotes: selfNotes,
+      state: state,
     );
+  }
+
+  /// 当前 `state` 行的 data（`state_data` 里的整份载荷）。读不出来 / 是坏 JSON
+  /// 一律返回**空 map**：空 = 这次不推 state，绝不冒充"有一条合法 state"。
+  ///
+  /// 抽成公开方法是为了让"state 真的进了上行请求体"能被单独断言
+  /// （见 `test/heartbeat_test.dart` 的端到端组）。
+  @visibleForTesting
+  static Future<Map<String, dynamic>> readStatePayload() async {
+    try {
+      final raw = await Prefs.stateData();
+      if (raw.trim().isEmpty) return const <String, dynamic>{};
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) return copyStringMap(decoded);
+    } catch (_) {
+      // 坏 JSON 当没有：下一行心跳会重写它（单赢家，读者取 ts 最大那条）。
+    }
+    return const <String, dynamic>{};
+  }
+
+  /// 把所有本机记录整理成 JournalLine（供 R3 导出使用；不做云端 key 去重，
+  /// 因为导出是本机全量、不是"缺什么补什么"）。排序/白名单裁剪在导出侧做。
+  Future<List<JournalLine>> buildLocalJournalLines() async {
+    final local = await _exportLocal();
+    final lines = <JournalLine>[];
+    for (final m in local.messages) {
+      final role = m['role'];
+      final at = m['created_at'];
+      if (role is String && at is int) {
+        lines.add(JournalLine(
+            type: JournalLine.typeMessage,
+            key: journalKeyForMessage(role, at),
+            ts: at,
+            data: m));
+      }
+    }
+    for (final n in local.notes) {
+      final content = n['content'];
+      if (content is! String || content.trim().isEmpty) continue;
+      final cat = n['category'] is String ? n['category'] as String : '';
+      final at = n['created_at'] is int ? n['created_at'] as int : 0;
+      lines.add(JournalLine(
+          type: JournalLine.typeNote,
+          key: journalKeyForNote(cat, content),
+          ts: at,
+          data: n));
+    }
+    for (final e in local.styleExamples) {
+      final original = e['original'];
+      final preferred = e['preferred'];
+      if (original is! String || preferred is! String) continue;
+      if (preferred.trim().isEmpty) continue;
+      final at = e['created_at'] is int ? e['created_at'] as int : 0;
+      lines.add(JournalLine(
+          type: JournalLine.typeStyleExample,
+          key: journalKeyForStyleExample(original, preferred),
+          ts: at,
+          data: e));
+    }
+    for (final c in local.memoryChunks) {
+      final summary = c['summary'];
+      if (summary is! String || summary.trim().isEmpty) continue;
+      final fromId = c['from_id'] is int ? c['from_id'] as int : 0;
+      final toId = c['to_id'] is int ? c['to_id'] as int : 0;
+      final at = c['created_at'] is int ? c['created_at'] as int : 0;
+      lines.add(JournalLine(
+          type: JournalLine.typeMemoryChunk,
+          key: journalKeyForMemoryChunk(fromId, toId, summary),
+          ts: at,
+          data: c));
+    }
+    if (local.speechProfile.isNotEmpty) {
+      lines.add(JournalLine(
+          type: JournalLine.typeSpeechProfile,
+          key: journalKeySpeechProfile,
+          ts: DateTime.now().millisecondsSinceEpoch,
+          data: local.speechProfile));
+    }
+    if (local.styleProfile.isNotEmpty) {
+      lines.add(JournalLine(
+          type: JournalLine.typeStyleProfile,
+          key: journalKeyStyleProfile,
+          ts: DateTime.now().millisecondsSinceEpoch,
+          data: local.styleProfile));
+    }
+    if (local.companion.isNotEmpty) {
+      lines.add(JournalLine(
+          type: JournalLine.typePersona,
+          key: journalKeyPersona,
+          ts: DateTime.now().millisecondsSinceEpoch,
+          data: local.companion));
+    }
+    if (local.selfProfile.isNotEmpty) {
+      lines.add(JournalLine(
+          type: JournalLine.typeSelf,
+          key: journalKeySelf,
+          ts: local.selfProfile['derivedAt'] is int
+              ? local.selfProfile['derivedAt'] as int
+              : DateTime.now().millisecondsSinceEpoch,
+          data: local.selfProfile));
+    }
+    for (final f in local.selfFacts) {
+      final text = f['text'];
+      if (text is! String || text.trim().isEmpty) continue;
+      final at = f['createdAt'] is int ? f['createdAt'] as int : 0;
+      lines.add(JournalLine(
+          type: JournalLine.typeSelfFact,
+          key: journalKeyForSelfFact(text),
+          ts: at,
+          data: f));
+    }
+    for (final n in local.selfNotes) {
+      final text = n['text'];
+      if (text is! String || text.trim().isEmpty) continue;
+      final dayKey = n['dayKey'] is String ? n['dayKey'] as String : '';
+      final at = n['createdAt'] is int ? n['createdAt'] as int : 0;
+      lines.add(JournalLine(
+          type: JournalLine.typeSelfNote,
+          key: journalKeyForSelfNote(dayKey, text),
+          ts: at,
+          data: n));
+    }
+    // T07 · state 也要能被导出（C9 的 W_MEMORY 已含它，C6 上线后是第 10 项）。
+    // 单赢家：本机只留一份"当前状态"，`ts` 用 lastPulseAt（状态时刻，不是导出时刻）。
+    if (local.state.isNotEmpty) {
+      final pulse = local.state['lastPulseAt'];
+      lines.add(JournalLine(
+          type: JournalLine.typeState,
+          key: journalKeyState,
+          ts: pulse is int ? pulse : DateTime.now().millisecondsSinceEpoch,
+          data: local.state));
+    }
+    return lines;
   }
 
   /// 掉 id：本地自增主键在别的设备上没有意义。
@@ -1288,7 +1670,7 @@ class CloudSync extends ChangeNotifier {
 }
 
 /// 本地待推送记录的一次性导出结果。
-class _LocalExport {
+class LocalExport {
   final Map<String, dynamic> companion;
   final Map<String, dynamic> speechProfile;
 
@@ -1299,7 +1681,22 @@ class _LocalExport {
   final List<Map<String, dynamic>> memoryChunks;
   final List<Map<String, dynamic>> messages;
 
-  const _LocalExport({
+  /// R2 自我认知三块（self 聚合视图 / 自生长事实 / 每日自述）。
+  /// 它们是生成时已过 QuotaGate 闸门的缓存，这里只按 key 追加推送，不再二次判定。
+  final Map<String, dynamic> selfProfile;
+  final List<Map<String, dynamic>> selfFacts;
+  final List<Map<String, dynamic>> selfNotes;
+
+  /// T07 · 当前 `state` 行的 data（单赢家，key 固定 `state:v1`）。
+  ///
+  /// **空 map 是合法状态**（从没写过心跳 / 缓存坏了），push 段见到空就整段跳过。
+  /// 写成 `Map<String, dynamic>?` 才是坏法：调用方迟早会漏一个 `?`，
+  /// 然后在同步主路径上抛 null 检查异常——一条边界数据把整个云同步带崩。
+  final Map<String, dynamic> state;
+
+  /// 公开（去掉下划线）只为让测试能构造 fixture 断言"上行请求体里到底有什么"；
+  /// 生产代码只经 `_exportLocal()` 产出它。
+  const LocalExport({
     required this.companion,
     required this.speechProfile,
     required this.styleProfile,
@@ -1307,6 +1704,10 @@ class _LocalExport {
     required this.styleExamples,
     required this.memoryChunks,
     required this.messages,
+    required this.selfProfile,
+    required this.selfFacts,
+    required this.selfNotes,
+    this.state = const <String, dynamic>{},
   });
 }
 

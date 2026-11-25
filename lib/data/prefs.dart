@@ -74,6 +74,45 @@ class Prefs {
   static Future<void> clearCloudLibraryAck() async =>
       (await SharedPreferences.getInstance()).remove(_kCloudLibraryAck);
 
+  // ——— T01：设计 §3.3 新增键（一次列全，后续任务不再散落加键）———
+  // R10 的 _kCloudLibraryAck 在上方，保持原位不动。
+  static const _kProactiveDebug = 'proactive_debug';
+  static const _kPushplusToken = 'pushplus_token';
+  static const _kPushplusEnabled = 'pushplus_enabled';
+  static const _kPushplusDay = 'pushplus_day';
+  static const _kPushplusDayCount = 'pushplus_day_count';
+  static const _kPushplusFailStreak = 'pushplus_fail_streak';
+  static const _kUnreadCount = 'unread_count';
+  static const _kUnreadLast = 'unread_last';
+  static const _kSelfCache = 'self_cache';
+  static const _kSelfLastDistillAt = 'self_last_distill_at';
+  static const _kSelfFactWeek = 'self_fact_week';
+  /// 自生长事实 / 每日自述的本机缓存（journal 行 data 的 JSON 列表）。
+  /// 云端是权威，缓存只为离线可读与即时删除；删一条时本机立刻重算。
+  static const _kSelfFactsCache = 'self_facts_cache';
+  static const _kSelfNotesCache = 'self_notes_cache';
+  /// 硬事实拦截开关（B9：默认 false，只控制"丢弃候选"那一层，绝不关掉标记）。
+  static const _kHardFactGuardEnabled = 'hard_fact_guard_enabled';
+  static const _kStateDay = 'state_day';
+  static const _kStateDayCount = 'state_day_count';
+
+  /// 上一次写 `state` 行的时间（**毫秒时间戳**，字符串形式；只做时间语义）。
+  static const _kStateLast = 'state_last';
+
+  /// 当前 `state` 行的 data JSON（**载荷**，与上面那个时间戳键分开）。
+  ///
+  /// 为什么不复用 `state_last`（v1.4.5 / T07 裁决）：一个键装两种载荷是这个
+  /// 项目最典型的坏法——下一个人把它当时间戳，拿到一段 JSON，`int.parse` 或
+  /// 比大小会崩或静默得 0，然后 5 分钟去抖失效，且**没有任何测试会红**。
+  static const _kStateData = 'state_data';
+  static const _kHeartbeatLastTickAt = 'heartbeat_last_tick_at';
+  static const _kIntentDay = 'intent_day';
+  static const _kIntentDayCount = 'intent_day_count';
+  static const _kNoteNeartermDay = 'note_nearterm_day';
+
+  /// 最近一次成功对齐云端的时间（C5② 与 R2 能力门禁共用的同一事实）。
+  static const _kCloudAlignedOnce = 'cloud_aligned_once';
+
   /// 同步口令（空 = 还没开启）。云端目录 = sha256('peiban-sync-v1:' + 口令)。
   static Future<String> cloudPassphrase() async =>
       (await SharedPreferences.getInstance()).getString(_kCloudPassphrase) ??
@@ -89,6 +128,51 @@ class Prefs {
 
   static Future<void> setCloudSync(bool v) async =>
       (await SharedPreferences.getInstance()).setBool(_kCloudSync, v);
+
+  /// 云端按时送达（T06）：**只有 `'off'` / `'on'` 两值，默认 `'off'`**。
+  ///
+  /// 与 `cloudSync` 同构（§12.2 铁律 12），但**不许做成 bool / tri-state**：
+  /// - bool 表达不了"用户还没表过态"，将来想加"要不要提示"之类会没地方放；
+  /// - 出现第三个取值就等于多一个分支，而 `on` 的语义是**停用 L1/L2、只留 L3**，
+  ///   分支一多就必然有人忘记在某条路径上停用本地通知，表现是"一天收到两条"。
+  static const String _kCloudProactive = 'cloud_proactive';
+  static const String cloudProactiveOff = 'off';
+  static const String cloudProactiveOn = 'on';
+
+  static Future<String> cloudProactive() async {
+    final v = (await SharedPreferences.getInstance()).getString(_kCloudProactive) ??
+        '';
+    // 脏数据（空 / 大写 / 别的词）一律按 off：**"不知道"不许当成 on**。
+    return v == cloudProactiveOn ? cloudProactiveOn : cloudProactiveOff;
+  }
+
+  static Future<void> setCloudProactive(String v) async {
+    final normalized = v == cloudProactiveOn ? cloudProactiveOn : cloudProactiveOff;
+    await (await SharedPreferences.getInstance())
+        .setString(_kCloudProactive, normalized);
+  }
+
+  /// 候选句池「今天已经尝试生成过一次」的日期标记（yyyyMMdd）。
+  ///
+  /// 语义是**「失败即今天没有」，不是「失败就再试」**：池子读不到（网络抖动 /
+  /// 对象还没建）时 `CosObjectPoolStore.read` 返回空池，不区分"空"和"读失败"，
+  /// 于是每一轮同步都会再生成一次、再调一次模型。一天活跃 12 小时、每 5 分钟
+  /// 一次会话 ⇒ 最坏上百次模型调用，**一次故障会自己放大成账单**。
+  /// 所以这个键**成功失败都写**：它记的是"试过"，不是"成功"。
+  static const _kProactivePoolAttemptDay = 'proactive_pool_attempt_day';
+
+  static Future<String> proactivePoolAttemptDay() async =>
+      (await SharedPreferences.getInstance())
+          .getString(_kProactivePoolAttemptDay) ??
+      '';
+
+  static Future<void> setProactivePoolAttemptDay(String v) async =>
+      (await SharedPreferences.getInstance())
+          .setString(_kProactivePoolAttemptDay, v);
+
+  /// 云端按时送达是否开启（读侧唯一入口，避免各处自己比字符串）。
+  static Future<bool> cloudProactiveEnabled() async =>
+      await cloudProactive() == cloudProactiveOn;
 
   /// 最近一次成功上传/恢复的时间（毫秒）。
   static Future<int> cloudLastSyncAt() async =>
@@ -297,4 +381,170 @@ class Prefs {
     await sp.setInt(_kStart, s.startHour.clamp(0, 23));
     await sp.setInt(_kEnd, s.endHour.clamp(1, 24));
   }
+
+  // ——— T01：设计 §3.3 键的读写（只存本机）———
+
+  /// 主动消息纯观测数据（JSON，只写不读，除诊断页）。
+  static Future<String> proactiveDebug() async =>
+      (await SharedPreferences.getInstance()).getString(_kProactiveDebug) ?? '';
+
+  static Future<void> setProactiveDebug(String raw) async =>
+      (await SharedPreferences.getInstance()).setString(_kProactiveDebug, raw);
+
+  /// pushplus token 脱敏：日志 / 导出 / 诊断一律只留后 4 位。
+  static String maskPushplusToken(String token) {
+    if (token.length <= 4) return 'pus***';
+    return 'pus***${token.substring(token.length - 4)}';
+  }
+
+  static Future<String> pushplusToken() async =>
+      (await SharedPreferences.getInstance()).getString(_kPushplusToken) ?? '';
+
+  static Future<void> setPushplusToken(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kPushplusToken, v);
+
+  /// 默认关（开启时由设置页弹一次告知）。
+  static Future<bool> pushplusEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_kPushplusEnabled) ?? false;
+
+  static Future<void> setPushplusEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_kPushplusEnabled, v);
+
+  static Future<String> pushplusDay() async =>
+      (await SharedPreferences.getInstance()).getString(_kPushplusDay) ?? '';
+
+  static Future<void> setPushplusDay(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kPushplusDay, v);
+
+  static Future<int> pushplusDayCount() async =>
+      (await SharedPreferences.getInstance()).getInt(_kPushplusDayCount) ?? 0;
+
+  static Future<void> setPushplusDayCount(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kPushplusDayCount, v);
+
+  /// 连续失败 ≥3 当日熔断，不许重试打爆第三方额度。
+  static Future<int> pushplusFailStreak() async =>
+      (await SharedPreferences.getInstance()).getInt(_kPushplusFailStreak) ?? 0;
+
+  static Future<void> setPushplusFailStreak(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kPushplusFailStreak, v);
+
+  static Future<int> unreadCount() async =>
+      (await SharedPreferences.getInstance()).getInt(_kUnreadCount) ?? 0;
+
+  static Future<void> setUnreadCount(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kUnreadCount, v);
+
+  static Future<String> unreadLast() async =>
+      (await SharedPreferences.getInstance()).getString(_kUnreadLast) ?? '';
+
+  static Future<void> setUnreadLast(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kUnreadLast, v);
+
+  /// self 行 data 的本机缓存（免每次读云端）。
+  static Future<String> selfCache() async =>
+      (await SharedPreferences.getInstance()).getString(_kSelfCache) ?? '';
+
+  static Future<void> setSelfCache(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kSelfCache, v);
+
+  static Future<int> selfLastDistillAt() async =>
+      (await SharedPreferences.getInstance()).getInt(_kSelfLastDistillAt) ?? 0;
+
+  static Future<void> setSelfLastDistillAt(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kSelfLastDistillAt, v);
+
+  /// 周额度：`2026W47` + 本周已写条数（JSON）。
+  static Future<String> selfFactWeek() async =>
+      (await SharedPreferences.getInstance()).getString(_kSelfFactWeek) ?? '';
+
+  static Future<void> setSelfFactWeek(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kSelfFactWeek, v);
+
+  static Future<String> selfFactsCache() async =>
+      (await SharedPreferences.getInstance()).getString(_kSelfFactsCache) ?? '';
+
+  static Future<void> setSelfFactsCache(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kSelfFactsCache, v);
+
+  static Future<String> selfNotesCache() async =>
+      (await SharedPreferences.getInstance()).getString(_kSelfNotesCache) ?? '';
+
+  static Future<void> setSelfNotesCache(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kSelfNotesCache, v);
+
+  /// B9：默认 false。只控制"是否丢弃硬事实候选"，与标记/筛选完全无关。
+  static Future<bool> hardFactGuardEnabled() async =>
+      (await SharedPreferences.getInstance()).getBool(_kHardFactGuardEnabled) ?? false;
+
+  static Future<void> setHardFactGuardEnabled(bool v) async =>
+      (await SharedPreferences.getInstance()).setBool(_kHardFactGuardEnabled, v);
+
+  static Future<String> stateDay() async =>
+      (await SharedPreferences.getInstance()).getString(_kStateDay) ?? '';
+
+  static Future<void> setStateDay(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kStateDay, v);
+
+  static Future<int> stateDayCount() async =>
+      (await SharedPreferences.getInstance()).getInt(_kStateDayCount) ?? 0;
+
+  static Future<void> setStateDayCount(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kStateDayCount, v);
+
+  static Future<String> stateLast() async =>
+      (await SharedPreferences.getInstance()).getString(_kStateLast) ?? '';
+
+  static Future<void> setStateLast(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kStateLast, v);
+
+  /// 当前 state 行的 data JSON（空串 = 还没有过有效心跳）。
+  /// **载荷只在 `state_data`**：`state_last` 永远是时间戳，两者不许混用。
+  static Future<String> stateData() async =>
+      (await SharedPreferences.getInstance()).getString(_kStateData) ?? '';
+
+  static Future<void> setStateData(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kStateData, v);
+
+  static Future<int> heartbeatLastTickAt() async =>
+      (await SharedPreferences.getInstance()).getInt(_kHeartbeatLastTickAt) ?? 0;
+
+  static Future<void> setHeartbeatLastTickAt(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kHeartbeatLastTickAt, v);
+
+  static Future<String> intentDay() async =>
+      (await SharedPreferences.getInstance()).getString(_kIntentDay) ?? '';
+
+  static Future<void> setIntentDay(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kIntentDay, v);
+
+  static Future<int> intentDayCount() async =>
+      (await SharedPreferences.getInstance()).getInt(_kIntentDayCount) ?? 0;
+
+  static Future<void> setIntentDayCount(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kIntentDayCount, v);
+
+  /// 近况 note 当天是否已尝试生成（一天只尝试一次）。
+  static Future<String> noteNeartermDay() async =>
+      (await SharedPreferences.getInstance()).getString(_kNoteNeartermDay) ?? '';
+
+  static Future<void> setNoteNeartermDay(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kNoteNeartermDay, v);
+
+  /// 最近一次**成功**读到云端 journal 的时间（毫秒，0 = 从来没对齐成功过）。
+  ///
+  /// 键名沿用设计的 `cloud_aligned_once`（`docs/待裁决-T04.md` B 条 / §7.2 判定），
+  /// 两个消费者共用这一个事实：
+  /// - 导出的 C5②：判断"我们到底知不知道本机是不是云端的全量"；
+  /// - R2 能力门禁（只认本次运行，见 `CloudSync.canWriteSelfNow`）。
+  ///
+  /// **必须落盘**——放内存里重启就没了，会变成"昨天对齐过，今天导出又说不完整"
+  /// 的狼来了。**只在成功那条路径写，失败一律不写**（见 `CloudSync._run` 收尾段）。
+  /// 值存时间戳而不是 bool：`>0` 与 bool 等价，但将来要显示"上次对齐时间"时
+  /// bool 不够用，多存一个键才是真的乱。
+  static Future<int> cloudAlignedOnce() async =>
+      (await SharedPreferences.getInstance()).getInt(_kCloudAlignedOnce) ?? 0;
+
+  static Future<void> setCloudAlignedOnce(int v) async =>
+      (await SharedPreferences.getInstance()).setInt(_kCloudAlignedOnce, v);
 }

@@ -18,6 +18,35 @@ class SpeechProfileService {
   /// 每积累多少条用户消息学一次。
   static const int reviewEvery = 8;
 
+  /// persona 里出现这些词 → 她是个话少/冷淡/直接的人，撒娇叠词会和人设打架。
+  static const List<String> _coldPersonaMarkers = <String>[
+    '话少', '不撒娇', '不叠字', '冷淡', '直接',
+  ];
+
+  /// 会和人设冲突的撒娇/叠词类口头禅（**纯字符串规则，不调模型**，设计 §6.4）。
+  static const List<String> _coquettishWords = <String>[
+    '宝宝', '绝绝子', '亲亲', '呜呜', '抱抱', '宝宝们',
+  ];
+
+  /// E4 / R5：口头禅与人设冲突过滤（纯函数，可单测）。
+  ///
+  /// 若 [personaText] 里出现「话少/不撒娇/不叠字/冷淡/直接」等词，则丢弃
+  /// [list] 里属于 [coquettishWords] 的撒娇叠词——她不是那种人，别硬塞。
+  /// 不含任何冷感标记时原样返回（不误删）。
+  static List<String> filterCatchphrases(
+    List<String> list,
+    String personaText,
+  ) {
+    final cold = _coldPersonaMarkers.any((m) => personaText.contains(m));
+    if (!cold) return List<String>.unmodifiable(list);
+    final kept = <String>[];
+    for (final w in list) {
+      final isCoquettish = _coquettishWords.any((c) => w.contains(c));
+      if (!isCoquettish) kept.add(w);
+    }
+    return List<String>.unmodifiable(kept);
+  }
+
   Future<SpeechProfile> review({
     required String apiKey,
     required List<String> userLines,

@@ -5,6 +5,7 @@ import 'pages/appearance_page.dart';
 import 'pages/background_page.dart';
 import 'pages/chat_page.dart';
 import 'pages/config_page.dart';
+import 'pages/diagnostics_page.dart';
 import 'pages/home_page.dart';
 import 'pages/manual_page.dart';
 import 'pages/persona_page.dart';
@@ -79,6 +80,7 @@ class PeiBanApp extends StatelessWidget {
           '/home': (_) => const HomePage(),
           '/chat': (_) => const ChatPage(autoProactive: false),
           '/settings': (_) => const SettingsPage(),
+          '/diagnostics': (_) => const DiagnosticsPage(),
           '/manual': (_) => const ManualPage(),
           '/appearance': (_) => const AppearancePage(),
           '/background': (_) => const BackgroundPage(),

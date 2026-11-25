@@ -6,6 +6,8 @@ import '../models/style_example.dart';
 import '../models/style_profile.dart';
 import '../models/user_note.dart';
 import 'chat_images.dart';
+import 'prompt_budget.dart';
+import 'speech_profile_service.dart';
 
 /// 把「人设 + 行为手册 + 旧事摘要 + 说话风格 + 最近原文」拼成一次请求。
 ///
@@ -33,7 +35,94 @@ class ContextBuilder {
   /// 用户亲手改过的说法，最多带多少条（每条一两句话，太多会稀释人设）。
   static const int maxStyleExamples = 12;
 
+  /// 用过滤后的口头禅渲染说话方式段（其余字段与 SpeechProfile.renderForPrompt 一致）。
+  static String _renderSpeechWithPhrases(
+    SpeechProfile s,
+    List<String> phrases,
+  ) {
+    final b = StringBuffer();
+    if (s.sentenceLength.isNotEmpty) b.writeln('- 句子长短：${s.sentenceLength}');
+    if (s.tone.isNotEmpty) b.writeln('- 语气：${s.tone}');
+    if (phrases.isNotEmpty) {
+      b.writeln('- 常说的话 / 口头禅：${phrases.join('、')}');
+    }
+    if (s.punctuation.isNotEmpty) b.writeln('- 标点与表情习惯：${s.punctuation}');
+    if (s.rhythm.isNotEmpty) b.writeln('- 说话节奏：${s.rhythm}');
+    if (s.notes.isNotEmpty) b.writeln('- 其他：${s.notes}');
+    return b.toString();
+  }
+
   static String buildSystem({
+    required String persona,
+    required List<UserNote> notes,
+    required List<MemoryChunk> chunks,
+    required int window,
+    int emojiLevel = 2,
+    SpeechProfile? speech,
+    String appearance = '',
+    List<StyleExample> styleExamples = const <StyleExample>[],
+    StyleProfile? styleProfile,
+    String nowBlock = '',
+    String gapBlock = '',
+    String moodBlock = '',
+    String selfBlock = '',
+    /// 仅供 D3 诊断/测试：`false` = 拼「改动前」的口径（不带 self 段、不带 R5 三行）。
+    bool withNewBlocks = true,
+  }) {
+    String compose({required int dropOldestChunks, required bool newBlocks}) =>
+        _compose(
+          persona: persona,
+          notes: notes,
+          chunks: chunks,
+          window: window,
+          emojiLevel: emojiLevel,
+          speech: speech,
+          appearance: appearance,
+          styleExamples: styleExamples,
+          styleProfile: styleProfile,
+          nowBlock: nowBlock,
+          gapBlock: gapBlock,
+          moodBlock: moodBlock,
+          selfBlock: selfBlock,
+          dropOldestChunks: dropOldestChunks,
+          withNewBlocks: newBlocks,
+        );
+
+    // 「改动前」在运行时算得出来：同样的输入、不带新加的三处再拼一遍。
+    final base = compose(dropOldestChunks: 0, newBlocks: false);
+    if (!withNewBlocks) return base;
+
+    // ——— D3 收口：总字数 ≤ baseline × 1.10，不放宽 ———
+    //
+    // 超线**只丢最旧的旧事摘要（chunk）**，绝不砍 persona / self / notes——那三样
+    // 是"她是谁"的根据，砍了就等于换了个人。摘要丢光还超线（正常不会发生）就如实
+    // 留着，不偷偷动人设。
+    //
+    // ⚠️ **"砍光还超线就留着"是有意的，不许改成"那就砍 self"**。
+    // 这条约束防的是"新增块把 prompt 撑爆"，不是"必须在任何输入下都 ≤110%"：
+    // 真到了摘要砍光还超线的地步，说明 baseline 本来就小得离谱（比如 0 条摘要 +
+    // 极短人设），这时候**宁可超线也不许动 self**——动 self 就是拿"她是谁"去换一个
+    // 字数指标，那是本末倒置。改这里之前请先看 `context_budget_test.dart` 的
+    // "砍到线内为止"那条测试，它同时钉了上界（不许砍太多）。
+    final cap = base.length * PromptBudget.maxPromptRatio;
+    var out = compose(dropOldestChunks: 0, newBlocks: true);
+    var drop = 0;
+    while (out.length > cap && drop < chunks.length) {
+      drop++;
+      final retried = compose(dropOldestChunks: drop, newBlocks: true);
+      // 丢一条摘要省不出字（摘要已被预算挡在门外）→ 长度不变，别死循环。
+      if (retried.length >= out.length) {
+        out = retried;
+        break;
+      }
+      out = retried;
+    }
+    return out;
+  }
+
+  /// 真正的拼装。`dropOldestChunks` = 为了 D3 从摘要里**从旧到新**丢掉几条；
+  /// `withNewBlocks=false` 表示「改动前」的口径（不带 self 段、不带 R5 三行）。
+  static String _compose({
     required String persona,
     required List<UserNote> notes,
     required List<MemoryChunk> chunks,
@@ -50,11 +139,27 @@ class ContextBuilder {
     String gapBlock = '',
     /// 她此刻的情绪（生气/不爽/刚被哄好）。
     String moodBlock = '',
+    /// R2 自我认知段（self 聚合视图，≤360 字）。位置在【认识你自己】之前：
+    /// persona → 【现在】 → 【我知道我是谁】 → 原【认识你自己】 → 关于对方…
+    /// 内容由 SelfService 生成，调用方传进来；这里只负责位置与收尾句。
+    String selfBlock = '',
+    required int dropOldestChunks,
+    required bool withNewBlocks,
   }) {
     final b = StringBuffer(persona.trim());
 
     if (nowBlock.trim().isNotEmpty) {
       b.writeln('\n\n$nowBlock');
+    }
+
+    // R2：自我描述独立成段，硬上限 360 字由 SelfComposer 保证；这里只截断兜底，
+    // 绝不碰 persona 正文（B3：注入前后 prompt 首 200 字一致）。
+    if (withNewBlocks && selfBlock.trim().isNotEmpty) {
+      b.writeln('\n\n【我知道我是谁】');
+      final s = selfBlock.trim();
+      b.writeln(s.length > 360 ? s.substring(0, 360) : s);
+      b.writeln('以上是你的自我描述。你不需要向对方解释、复述或朗读它；'
+          '被问到时用你自己的话随口说，不要背。');
     }
 
     b.writeln('\n\n【认识你自己】');
@@ -66,11 +171,18 @@ class ContextBuilder {
         '你的表情包），大方自然地认下来，绝不要当成对方；'
         '对不上的时候，才可能是对方本人或对方身边的事。');
 
-    if (notes.isNotEmpty) {
+    // 关于对方长期记住的事：排序责任在 pickNotes 内部（设计 §6.1）。
+    // 这里**传原始顺序**，绝不预排序——乱序是合法输入，函数自己给出确定结果。
+    // 近况（category=近况）前 ≤5 条优先占位，其余补足到 20，总数永不超过 20。
+    final pickedNotes = PromptBudget.pickNotes(notes);
+    if (pickedNotes.isNotEmpty) {
       b.writeln('\n\n【关于对方，你长期记住的事】');
       b.writeln('（只作为背景，不要主动提起、不要一条条报出来，也不要堆进同一句里）');
-      for (final n in notes.take(maxNoteCount)) {
-        b.writeln('- [${n.category}] ${n.content}');
+      for (final n in pickedNotes) {
+        final content = n.content.length > PromptBudget.maxNoteContentChars
+            ? n.content.substring(0, PromptBudget.maxNoteContentChars)
+            : n.content;
+        b.writeln('- [${n.category}] $content');
       }
     }
 
@@ -85,10 +197,17 @@ class ContextBuilder {
         picked.add(c);
         used += c.summary.length;
       }
-      b.writeln('\n\n【更久以前的记忆摘要】');
-      b.writeln('（按时间顺序，都是你们真实发生过的事，可以自然提起）');
-      for (final c in picked.reversed) {
-        b.writeln('- ${c.summary}');
+      // D3 收口：从**最旧**的开始丢（picked 是新→旧，所以丢尾部几条）。
+      final keepCount = dropOldestChunks >= picked.length
+          ? 0
+          : picked.length - dropOldestChunks;
+      final kept = keepCount == 0 ? <MemoryChunk>[] : picked.sublist(0, keepCount);
+      if (kept.isNotEmpty) {
+        b.writeln('\n\n【更久以前的记忆摘要】');
+        b.writeln('（按时间顺序，都是你们真实发生过的事，可以自然提起）');
+        for (final c in kept.reversed) {
+          b.writeln('- ${c.summary}');
+        }
       }
     }
 
@@ -96,8 +215,20 @@ class ContextBuilder {
       b.writeln('\n\n【对方平时怎么说话】');
       b.writeln('（后台默默观察到的语言习惯，只用来让对话节奏贴合；不要复述这些条目，'
           '不要当成关于 TA 的事实，更不要改变你自己定好的性格与说话方式）');
-      b.writeln(speech.renderForPrompt());
+      // R5/E4：口头禅与人设冲突过滤（纯字符串规则，不调模型）。
+      // persona 里出现「话少/不撒娇/冷淡/直接」等词时，丢掉「宝宝/绝绝子」这类
+      // 撒娇叠词，避免她一边冷一边卖萌。渲染的还是同一个 SpeechProfile 结构。
+      final keptPhrases = SpeechProfileService.filterCatchphrases(
+          speech.catchphrases, persona);
+      b.writeln(_renderSpeechWithPhrases(speech, keptPhrases));
       b.writeln('回复时自然贴近对方的句长和节奏，但永远保持你自己的人设。');
+      if (withNewBlocks) {
+        // R5 / E2 两条硬约束：照设计 §R5 的**断言原文**写，一个字不加。
+        // （"你和 TA 是两个人" 已经在句子里，不为迁就断言把句子写啰嗦。）
+        b.writeln('【只对齐节奏】只对齐句长和节奏，不模仿对方的用词、情绪和态度；'
+            '你和 TA 是两个人。');
+        b.writeln('和上面的自我描述冲突时，以你自己的描述为准。');
+      }
     }
 
     b.writeln('\n\n【看图】对方可能会给你发照片。看到图片就自然地聊它：'
@@ -147,6 +278,14 @@ class ContextBuilder {
 
     if (moodBlock.trim().isNotEmpty) {
       b.writeln('\n\n${moodBlock.trim()}');
+    }
+
+    // R5 信号优先级与降权：prompt 内显式写入裁决顺序（PRD 原文口径）。
+    if (withNewBlocks) {
+      b.writeln('\n【信号优先级 · 冲突时怎么取舍】');
+      b.writeln('几处信息互相打架时，优先级从高到低：'
+          'style_example > self > style_profile > speech_profile。'
+          '自下而上让位，不得反过来。');
     }
 
     // 她的说话方式档案：全部 style_examples 的长期蒸馏产物（前面会定期用

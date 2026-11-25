@@ -28,6 +28,12 @@ import 'package:crypto/crypto.dart';
 /// - style_profile：固定 `stp:v1`（同上；「她的说话方式档案」，手机是唯一
 ///   蒸馏写入方，电脑 Agent 端只读）
 /// - persona：固定 `persona:v1`（同上）
+/// - self：固定 `self:v1`（单赢家；聚合视图，≤360 字）
+/// - self_fact：`sf:<sha16(text)>`（原子自生长事实，可单条删除）
+/// - self_note：`sn:<yyyyMMdd>:<sha16(content)>`（每日自述）
+/// - state：固定 `state:v1`（单赢家；心跳/状态快照）
+///
+/// `pending` **不在本协议里**（PRD 已撤销）：候选句走独立 COS 小对象。
 class JournalLine {
   /// 协议版本。读取方只认自己支持的版本，未来版本留给未来的读者。
   static const int protocolVersion = 1;
@@ -41,6 +47,12 @@ class JournalLine {
   static const String typeStyleProfile = 'style_profile';
   static const String typePersona = 'persona';
 
+  // R2 自我认知（P0）+ 状态快照（P1）。**没有 self_fact_del / pending**。
+  static const String typeSelf = 'self';
+  static const String typeSelfFact = 'self_fact';
+  static const String typeSelfNote = 'self_note';
+  static const String typeState = 'state';
+
   /// 本协议认识的全部类型。类型不认识（未来版本写入的）→ 解析时跳过该行。
   static const Set<String> knownTypes = <String>{
     typeMessage,
@@ -50,14 +62,19 @@ class JournalLine {
     typeSpeechProfile,
     typeStyleProfile,
     typePersona,
+    typeSelf,
+    typeSelfFact,
+    typeSelfNote,
+    typeState,
   };
 
-  /// speech_profile / style_profile / persona 是「整对象一条」：key 固定，
-  /// 读者取同 key 中 ts 最大的一行生效。
+  /// 整对象一条：key 固定，读者取同 key 中 ts 最大的一行生效。
+  /// self / state 也在内（设计 §7.3 契约同步清单）。
   bool get isSingleWinner =>
       type == typeSpeechProfile ||
       type == typeStyleProfile ||
-      type == typePersona;
+      type == typePersona ||
+      type == typeSelf || type == typeState;
 
   final String type;
   final String key;
@@ -140,24 +157,75 @@ const String journalKeyStyleProfile = 'stp:v1';
 /// persona 的固定 key（整对象一条）。
 const String journalKeyPersona = 'persona:v1';
 
+/// self 的固定 key（聚合视图，单赢家）。
+const String journalKeySelf = 'self:v1';
+
+/// state 的固定 key（状态快照，单赢家）。
+const String journalKeyState = 'state:v1';
+
+/// self_fact 的 key：`sf:<sha16(text)>`。内容即身份，原子可单删。
+String journalKeyForSelfFact(String text) => 'sf:${_hex16(text)}';
+
+/// self_note 的 key：`sn:<yyyyMMdd>:<sha16(content)>`。
+/// 同一天同内容幂等；不同内容不会互相覆盖（非单赢家）。
+String journalKeyForSelfNote(String dayKey, String content) =>
+    'sn:$dayKey:${_hex16(content)}';
+
+/// 本端协议能力号。1 = 扩展前，2 = 支持 self/self_fact/self_note/state。
+/// 与 Node `src/journal.mjs` 的 CAPABILITY 必须是同一个数。
+///
+/// 唯一来源：只有这里能写 2。buildJournalLine() 注入 cap 时只引用本常量，
+/// 业务侧（SelfService / HeartbeatService）不许手写 cap。
+const int kJournalCapability = 2;
+
+/// 需要协议层自动注入 data.cap 的新 type（设计 §7.2 / v1.4.1）。
+const Set<String> _kCapInjectTypes = <String>{
+  JournalLine.typeSelf,
+  JournalLine.typeSelfFact,
+  JournalLine.typeSelfNote,
+  JournalLine.typeState,
+};
+
 // ——— 构建与解析 ———
 
+/// 协议层唯一的 `cap` 注入点：需要自描述的新 type，若 `data` 里没有 `cap`
+/// 就补上 [kJournalCapability]；老 type 原样返回（**不复制、不改写**）。
+///
+/// 为什么抽成公开纯函数（v1.4.5 / T07）：`_pushSingleWinner` 那条上行路径
+/// 是 `JournalLine.encode()` 直出，不经过 [buildJournalLine]，业务侧（例如
+/// HeartbeatService）如果自己写 `cap` 就等于把协议版本号散落到各处。
+/// 现在业务侧只调本函数，源码里 grep 不到手写 `cap`，值仍只有一个来源。
+Map<String, dynamic> injectCapIfNeeded(
+  String type,
+  Map<String, dynamic> data,
+) {
+  if (!_kCapInjectTypes.contains(type)) return data;
+  if (data.containsKey('cap')) return data;
+  return <String, dynamic>{...data, 'cap': kJournalCapability};
+}
+
 /// 构建一行 JSONL 文本。纯函数，可单测；Agent 端未来照抄同一份规则。
+///
+/// v1.4.1：对四个新 type，若 `data` 里没有 `cap` 键则自动注入
+/// `data['cap'] = kJournalCapability`。行外层 `v/type/key/ts/dev/data` 字段名与顺序不变；
+/// 老 type 的产物与改前逐字节一致（data 原样透传，不复制、不排序）。
 String buildJournalLine({
   required String type,
   required String key,
   required int ts,
   String dev = 'phone',
   required Map<String, dynamic> data,
-}) =>
-    jsonEncode(<String, dynamic>{
-      'v': JournalLine.protocolVersion,
-      'type': type,
-      'key': key,
-      'ts': ts,
-      'dev': dev,
-      'data': data,
-    });
+}) {
+  final outData = injectCapIfNeeded(type, data);
+  return jsonEncode(<String, dynamic>{
+    'v': JournalLine.protocolVersion,
+    'type': type,
+    'key': key,
+    'ts': ts,
+    'dev': dev,
+    'data': outData,
+  });
+}
 
 /// 解析整份 journal.jsonl 文本 → 全部有效行。
 ///
@@ -190,9 +258,9 @@ List<JournalLine> parseJournalLines(String raw) {
 }
 
 /// 从全部有效行里挑出「应生效」的行：
-/// - 普通类型（message/note/style_example/memory_chunk）：全部保留，
-///   调用方自己按 key 去重；
-/// - speech_profile / persona：同 key 取 ts 最大的一行（平局取后出现的）。
+/// - 普通类型（message/note/style_example/memory_chunk/self_fact/self_note）：
+///   全部保留，调用方自己按 key 去重；
+/// - speech_profile / persona / self / state：同 key 取 ts 最大的一行（平局取后出现的）。
 List<JournalLine> resolveEffectiveLines(List<JournalLine> lines) {
   final out = <JournalLine>[];
   final singleIdx = <String, int>{}; // key -> 在 out 中的下标

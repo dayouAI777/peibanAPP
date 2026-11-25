@@ -5,8 +5,12 @@ import '../data/emoji_kit.dart';
 import '../data/prefs.dart';
 import '../models/style_profile.dart';
 import '../services/cloud_sync.dart';
+import '../services/export_service.dart';
+import '../services/proactive_diag.dart';
+import '../services/proactive_service.dart';
 import '../services/update_service.dart';
 import '../state/app_state.dart';
+import 'self_page.dart';
 import '../widgets/silent_update_banner.dart';
 import '../widgets/update_helper.dart';
 
@@ -28,8 +32,11 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _checking = false;
   bool _cloudBusy = false;
   bool _cloudSyncOn = false;
+  bool _cloudProactiveOn = false;
   bool _passphraseVisible = false;
   bool _hasAuthCode = false;
+  bool _exporting = false;
+  String? _exportStatus;
 
   late ProactiveSettings _s;
   double _temperature = 0.8;
@@ -43,6 +50,7 @@ class _SettingsPageState extends State<SettingsPage> {
   String? _testMessage;
   String? _updateStatus;
   bool _testOk = false;
+  ProactiveDiagSnapshot? _diag;
 
   final _updateService = UpdateService();
 
@@ -63,7 +71,9 @@ class _SettingsPageState extends State<SettingsPage> {
     _silentUpdate = await Prefs.silentUpdateEnabled();
     _moodEnabled = await Prefs.moodEnabled();
     _cloudSyncOn = await Prefs.cloudSync();
+    _cloudProactiveOn = await Prefs.cloudProactiveEnabled();
     _hasAuthCode = (await Prefs.cloudAuthCode()).isNotEmpty;
+    _diag = await ProactiveDiag.load();
     final v = await _updateService.localVersion();
     if (!mounted) return;
     setState(() {
@@ -144,6 +154,56 @@ class _SettingsPageState extends State<SettingsPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  // ——— 导出（R3）———
+
+  /// 两个导出按钮共用这一条路径，只有 [ExportMode] 不同。
+  ///
+  /// 文案不由本页拼：C5 的四个分支（off / on+不完整 / on+完整 / 异常）全在
+  /// [ExportService] 里判，本页只负责把**真实状态**传进去，再把真实文案显示出来。
+  /// 本页绝不出现「导出成功」这种硬编码——云同步开着但本机可能缺记录时，
+  /// 文件确实生成了，但不许说成功。
+  Future<void> _export(ExportMode mode) async {
+    if (_exporting) return;
+    setState(() {
+      _exporting = true;
+      _exportStatus = null;
+    });
+    final cloud = CloudSync.instance;
+    // C5④：cloudSync 只有 off / on 两个值。开了开关但没设口令 = 实际没同步 ⇒ off。
+    final cloudSync = (_cloudSyncOn && cloud.hasPassphrase) ? 'on' : 'off';
+    // isComplete = 我们**知道**本机是不是云端的全量。三个条件缺一不可：
+    //   ① signedIn   —— 有身份，才有可能读到云端的行
+    //   ② !dirMismatch —— R10 三态里没有"云端读不到"这一种
+    //   ③ 落盘的对齐成功时间 > 0 —— 至少成功读过一次云端（键 `cloud_aligned_once`）
+    // 为什么要有 ③：首帧 / 从未对齐过时，我们**根本不知道**云端有没有本机缺的行。
+    // 这时说"导出成功"等于替她保证了一件我们并不知道的事，而失败模式是
+    // "她以为记忆都带走了，其实少了一块，且永远不会发现"——这就是静默数据丢失。
+    // 代价只是一行提示文案。代价不对称到这个程度，就选诚实那边。
+    final alignedOnce = await Prefs.cloudAlignedOnce() > 0;
+    final isComplete = cloud.signedIn && !cloud.dirMismatch && alignedOnce;
+    String message;
+    try {
+      final lines = await cloud.buildLocalJournalLines();
+      final r = await ExportService.export(
+        lines: lines,
+        mode: mode,
+        cloudSync: cloudSync,
+        isComplete: isComplete,
+      );
+      message = r.message;
+    } catch (_) {
+      // 兜底：导出服务内部已 try/catch，这里只防「取本机行」这一步自己抛。
+      // C5③ 失败口径一致：说失败，不给成功暗示。
+      message = '导出失败：读写出现异常，请稍后重试（记忆仍在，未受影响）';
+    }
+    if (!mounted) return;
+    setState(() {
+      _exporting = false;
+      _exportStatus = message;
+    });
+    _snack(message);
+  }
+
   /// 开启同步：拿输入框里的口令调 setPassphrase（内含 ≥8 位校验 + 立即上传）。
   Future<void> _cloudEnable() async {
     setState(() => _cloudBusy = true);
@@ -205,6 +265,58 @@ class _SettingsPageState extends State<SettingsPage> {
     setState(() => _cloudBusy = false);
     // 提示文案来自 setPassphrase 的真实结果（没变/已更新/失败原因），不硬编码
     _snack(outcome.message);
+  }
+
+  /// 「云端按时送达」开关（T06）。
+  ///
+  /// 开之前必须二次确认：这个功能的代价是"内容过第三方 + 只在最近开过 App 时带记忆"，
+  /// 不写清楚就等于用一句"已开启"把边界藏起来。关掉时立刻恢复 L1/L2，
+  /// **不许留"云端关了本地也没了"的空窗**（§5A.9）。
+  Future<void> _cloudProactiveToggle(bool v) async {
+    final app = context.read<AppState>();
+    final name = app.companion?.name ?? '';
+    if (!v) {
+      await Prefs.setCloudProactive(Prefs.cloudProactiveOff);
+      if (!mounted) return;
+      setState(() => _cloudProactiveOn = false);
+      // 立刻恢复本地排程（applySettings 也会走到这里，但用户刚点完就要有反馈）
+      try {
+        await ProactiveService.reschedule(name: name);
+      } catch (_) {
+        // 恢复失败只影响本地通知，不能因此把开关状态回滚成"还开着"。
+      }
+      _snack('已关闭云端送达，本地提醒恢复');
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('开启云端按时送达？'),
+        content: const Text(
+            '开启后，消息由云端服务器按时推送到微信，内容会经过第三方服务器'
+            '（pushplus）与云开发环境；App 里不会再重复提醒。\n\n'
+            '同时：本机的定时提醒会停用（否则一天会响两次），只保留兜底记录。'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('再想想')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('开启')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    await Prefs.setCloudProactive(Prefs.cloudProactiveOn);
+    if (!mounted) return;
+    setState(() => _cloudProactiveOn = true);
+    // 停用 L1/L2、只留 L3：这条路必须真的走到 reschedule，否则旧排程还会响。
+    try {
+      await ProactiveService.reschedule(name: name);
+    } catch (_) {}
+    _snack('已开启云端送达');
   }
 
   /// 关闭同步：云端不再变动，口令保留（重新打开不用重输），本机数据不受影响。
@@ -861,6 +973,18 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                       ],
                     ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: _cloudProactiveOn,
+                      title: const Text('云端按时送达'),
+                      // 这句是功能的真实边界，**必须原样**（不许美化、不许省）：
+                      // 云端只有拿到 App 预先生成的候选句，才"带记忆"。
+                      subtitle: const Text(
+                          '云端靠 App 预先生成的话，最近 48 小时内打开过 App 才带记忆'),
+                      onChanged: _cloudBusy
+                          ? null
+                          : (v) => _cloudProactiveToggle(v),
+                    ),
                     ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: const Icon(Icons.verified_user_outlined),
@@ -943,6 +1067,63 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const Divider(height: 28),
 
+          // ——— 导出（R3）———
+          Text('导出与备份', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            '导出的是这台手机上现在有的东西：文件写在手机的文档目录里，可以自己分享出去。'
+            '「只导出记忆」不含聊天原文，适合把记忆带走、不把私房话带走。',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+          ),
+          const SizedBox(height: 10),
+          // 两个按钮并列：同一份本机数据，两套白名单（C6/C7 说的就是这两份的差值）。
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _exporting ? null : () => _export(ExportMode.full),
+                  icon: const Icon(Icons.download_rounded, size: 18),
+                  label: const Text('导出全部'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed:
+                      _exporting ? null : () => _export(ExportMode.memoryOnly),
+                  icon: const Icon(Icons.psychology_outlined, size: 18),
+                  label: const Text('只导出记忆'),
+                ),
+              ),
+            ],
+          ),
+          if (_exporting)
+            const Padding(
+              padding: EdgeInsets.only(top: 10),
+              child: Row(
+                children: [
+                  SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2)),
+                  SizedBox(width: 10),
+                  Text('正在导出…'),
+                ],
+              ),
+            ),
+          // C5 的真实文案（三种正常分支 + 失败分支）常驻显示，不靠一闪而过的提示。
+          if (_exportStatus != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: Text(
+                _exportStatus!,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: Colors.grey.shade700, height: 1.6),
+              ),
+            ),
+          const Divider(height: 28),
+
           // ——— 聊天与记忆 ———
           Text('聊天与记忆', style: theme.textTheme.titleMedium),
           const SizedBox(height: 4),
@@ -974,6 +1155,15 @@ class _SettingsPageState extends State<SettingsPage> {
                 context.watch<AppState>().styleProfile)),
             // 只读状态行：档案是机器蒸馏产物，不做编辑入口
             // （与「人设定稿不改」同一精神），攒够修改自动更新。
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 56, bottom: 4),
+            child: Text(
+              '节奏适配：档案只用来对齐句长和节奏，不模仿对方的用词、情绪和态度——'
+              '她和 TA 是两个人；和「她的自我」冲突时，以她自己的说法为准。',
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: Colors.grey.shade600, height: 1.6),
+            ),
           ),
           const Divider(height: 24),
           Text('TA 用表情：${EmojiKit.labelOf(_emojiLevel)}'),
@@ -1095,6 +1285,27 @@ class _SettingsPageState extends State<SettingsPage> {
               ],
             ),
           ],
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.monitor_heart_outlined),
+            title: const Text('主动消息诊断'),
+            subtitle: Text(ProactiveDiag.summary(_diag)),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.pushNamed(context, '/diagnostics').then((_) {
+              if (!mounted) return;
+              _load(); // 从诊断页回来刷新摘要，证据可能刚被刷新过
+            }),
+          ),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.psychology_outlined),
+            title: const Text('她的自我'),
+            subtitle: const Text('她长出来的想法 · 可查看来源、可删'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SelfPage()),
+            ),
+          ),
           const Divider(height: 28),
 
           Text('说话的随机度：${_temperature.toStringAsFixed(2)}',

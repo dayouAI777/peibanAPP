@@ -294,4 +294,100 @@ void main() {
       expect(back.first.data['digested'], 29);
     });
   });
+
+  test('T01 四新 type：key 黄金值 / 单赢家集合 / 能力号（与 Node 逐字一致）', () {
+    expect(journalKeySelf, 'self:v1');
+    expect(journalKeyState, 'state:v1');
+    expect(journalKeyForSelfFact('我在广州工作'), 'sf:0e6b349ef4572019');
+    expect(journalKeyForSelfNote('20261113', '今天有点累'),
+        'sn:20261113:49baf06a9b62633c');
+    expect(kJournalCapability, 2);
+
+    for (final t in <String>[
+      JournalLine.typeSelf,
+      JournalLine.typeSelfFact,
+      JournalLine.typeSelfNote,
+      JournalLine.typeState,
+    ]) {
+      expect(JournalLine.knownTypes.contains(t), isTrue, reason: '缺少 $t');
+    }
+    expect(JournalLine.knownTypes.contains('pending'), isFalse);
+    expect(JournalLine.knownTypes.contains('self_fact_del'), isFalse);
+
+    expect(JournalLine(type: 'self', key: 'self:v1', ts: 1, data: const {})
+        .isSingleWinner, isTrue);
+    expect(JournalLine(type: 'state', key: 'state:v1', ts: 1, data: const {})
+        .isSingleWinner, isTrue);
+    expect(JournalLine(type: 'self_fact', key: 'sf:x', ts: 1, data: const {})
+        .isSingleWinner, isFalse);
+    expect(JournalLine(type: 'self_note', key: 'sn:x', ts: 1, data: const {})
+        .isSingleWinner, isFalse);
+    expect(JournalLine(type: 'pending', key: 'p:x', ts: 1, data: const {})
+        .isSingleWinner, isFalse);
+  });
+
+  test('v1.4.1：buildJournalLine 给四个新 type 自动注入 data.cap=2', () {
+    final cases = <List<String>>[
+      <String>[JournalLine.typeSelf, journalKeySelf],
+      <String>[JournalLine.typeSelfFact, 'sf:x'],
+      <String>[JournalLine.typeSelfNote, 'sn:20261125:x'],
+      <String>[JournalLine.typeState, journalKeyState],
+    ];
+    for (final c in cases) {
+      final line = parseJournalLines(buildJournalLine(
+        type: c[0], key: c[1], ts: 10, data: const <String, dynamic>{'text': 'hi'},
+      )).single;
+      expect(line.data['cap'], 2, reason: '${c[0]} 必须自动注入 cap=2');
+      expect(line.data['text'], 'hi');
+    }
+    // 显式 cap 不被覆盖
+    final explicit = parseJournalLines(buildJournalLine(
+      type: JournalLine.typeSelf,
+      key: journalKeySelf,
+      ts: 1,
+      data: const <String, dynamic>{'cap': 9},
+    )).single;
+    expect(explicit.data['cap'], 9);
+  });
+
+  test('v1.4.1：buildJournalLine 对四个老 type 逐字节不变（回归防误伤老行格式）', () {
+    final golden = <Map<String, String>>[
+      <String, String>{
+        'got': buildJournalLine(
+            type: JournalLine.typePersona,
+            key: 'persona:v1',
+            ts: 3,
+            data: const <String, dynamic>{'name': '阿雾'}),
+        'want': '{"v":1,"type":"persona","key":"persona:v1","ts":3,"dev":"phone","data":{"name":"阿雾"}}',
+      },
+      <String, String>{
+        'got': buildJournalLine(
+            type: JournalLine.typeNote,
+            key: 'n:a',
+            ts: 4,
+            data: const <String, dynamic>{'content': 'x'}),
+        'want': '{"v":1,"type":"note","key":"n:a","ts":4,"dev":"phone","data":{"content":"x"}}',
+      },
+      <String, String>{
+        'got': buildJournalLine(
+            type: JournalLine.typeMessage,
+            key: 'm:user:1',
+            ts: 5,
+            data: const <String, dynamic>{'role': 'user'}),
+        'want': '{"v":1,"type":"message","key":"m:user:1","ts":5,"dev":"phone","data":{"role":"user"}}',
+      },
+      <String, String>{
+        'got': buildJournalLine(
+            type: JournalLine.typeMemoryChunk,
+            key: 'c:a',
+            ts: 6,
+            data: const <String, dynamic>{'summary': 's'}),
+        'want': '{"v":1,"type":"memory_chunk","key":"c:a","ts":6,"dev":"phone","data":{"summary":"s"}}',
+      },
+    ];
+    for (final g in golden) {
+      expect(g['got'], g['want']);
+      expect(parseJournalLines(g['got']!).single.data.containsKey('cap'), isFalse);
+    }
+  });
 }
