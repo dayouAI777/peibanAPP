@@ -321,4 +321,87 @@ void main() {
     expect(stripped['name'], '阿雾');
     expect(stripped['persona_space'], '{"fields":{"name":"阿雾"}}');
   });
+
+  // ——— R10：身份派生 / 三态 / 版本门禁（与 Node r10.mjs 对拍）———
+
+  test('R10 身份派生黄金值：sha256(peiban-dev-v1:+口令) 前 32 位，跨端逐字节一致', () {
+    const pass = 'probe-passphrase-12345';
+    final id = CloudSync.deviceIdFor(pass);
+
+    expect(id, '0fda70a517aaba85d616bf1b93c97ca8');
+    expect(id.length, 32);
+    expect(id, matches(RegExp(r'^[0-9a-f]{32}$')));
+
+    // 确定性（跨实例、跨调用）
+    expect(CloudSync.deviceIdFor(pass), id);
+    expect(CloudSync.deviceIdFor(pass), CloudSync.deviceIdFor(pass));
+
+    // 差一个字符 = 另一个身份（这就是"口令打错看到空库"的成因）
+    expect(CloudSync.deviceIdFor('${pass}x'), isNot(id));
+
+    // 空口令不得派生出任何身份
+    expect(CloudSync.deviceIdFor(''), '');
+    expect(CloudSync.deviceIdFor('   '), '');
+  });
+
+  test('R10 目录只取匿名身份 sub，绝不用旧口令哈希目录寻址', () {
+    final dir = CloudSync.dirFor('gbNaPyO4oQTsw8yIdQflWg');
+    expect(dir, 'gbNaPyO4oQTsw8yIdQflWg');
+    expect(CloudSync.dirFor('  x  '), 'x');
+
+    // 旧哈希仍可计算（迁移脚本/历史对照用），但不参与云路径
+    final legacy = CloudSync.snapshotDirFor('probe-passphrase-12345');
+    expect(legacy, '848d929eb1e7c345299bba7826f34c2ac622973136263e2460655a412bdf5863');
+    expect(dir, isNot(legacy));
+  });
+
+  test('R10 404 三态：MISSING 不能当空库，有本机历史必须 BLOCKED', () {
+    expect(CloudSync.classifyRead(
+        state: CloudReadState.missing, hasLocalHistory: true),
+        CloudOutcome.blocked);
+    expect(CloudSync.classifyRead(
+        state: CloudReadState.missing, hasLocalHistory: false),
+        CloudOutcome.newLibrary);
+    expect(CloudSync.classifyRead(
+        state: CloudReadState.ok, hasLocalHistory: true),
+        CloudOutcome.ready);
+    expect(CloudSync.classifyRead(
+        state: CloudReadState.error, hasLocalHistory: true),
+        CloudOutcome.error);
+
+    final msg = CloudSync.cloudEmptyMessage();
+    expect(msg, contains('版本过旧'));
+    expect(msg, contains('口令不同'));
+    expect(msg, contains('本机记忆完好，没有被改动'));
+    // 不许暗示"我知道目录不存在"（服务端对两种 404 是同形的）
+    expect(msg.contains('不存在'), isFalse);
+    expect(msg.contains('not found'), isFalse);
+  });
+
+  test('R10 版本门禁用数值比较：1.7.3 旧、1.7.4 可用、1.7.10 大于 1.7.9', () {
+    expect(CloudSync.versionParts('1.7.10'), <int>[1, 7, 10]);
+    expect(CloudSync.compareVersionName('1.7.10', '1.7.9'), 1);
+    expect(CloudSync.isOldVersionName('1.7.3'), isTrue);
+    expect(CloudSync.isOldVersionName('1.7.4'), isFalse);
+    expect(CloudSync.isOldVersionName('1.7.10'), isFalse);
+    expect(CloudSync.isOldBuildNumber(19), isTrue);
+    expect(CloudSync.isOldBuildNumber(20), isFalse);
+    expect(CloudSync.minSupportedVersion, '1.7.4');
+    expect(CloudSync.minSupportedVersionCode, 20);
+  });
+
+  test('R10 口令为空时不进云路径：derive 出空身份且 align 被门禁拦住', () async {
+    SharedPreferences.setMockInitialValues(<String, Object>{});
+    await CloudSync.instance.bootstrap();
+
+    expect(CloudSync.instance.hasPassphrase, isFalse);
+    expect(CloudSync.deviceIdFor(''), '');
+
+    final r = await CloudSync.instance.align();
+    expect(r.ok, isFalse);
+    expect(r.message, contains('云同步没有开启'));
+    // 从头到尾没拿到任何身份：没有登录、没有派生、没有路径
+    expect(CloudSync.instance.uid, '');
+    expect(CloudSync.instance.journalPath, '');
+  });
 }

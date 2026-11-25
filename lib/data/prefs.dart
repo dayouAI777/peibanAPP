@@ -60,6 +60,20 @@ class Prefs {
   static const _kCloudSync = 'cloud_sync';
   static const _kCloudLastSyncAt = 'cloud_last_sync_at';
 
+  /// 换机出口：用户明确点「我在旧手机上有记录」后写下的"允许本次按新库初始化"确认。
+  /// 存的是派生的 deviceId（32 位 hex），**不存口令明文**。
+  static const _kCloudLibraryAck = 'cloud_library_ack';
+
+  static Future<String> cloudLibraryAck() async =>
+      (await SharedPreferences.getInstance()).getString(_kCloudLibraryAck) ??
+      '';
+
+  static Future<void> setCloudLibraryAck(String v) async =>
+      (await SharedPreferences.getInstance()).setString(_kCloudLibraryAck, v);
+
+  static Future<void> clearCloudLibraryAck() async =>
+      (await SharedPreferences.getInstance()).remove(_kCloudLibraryAck);
+
   /// 同步口令（空 = 还没开启）。云端目录 = sha256('peiban-sync-v1:' + 口令)。
   static Future<String> cloudPassphrase() async =>
       (await SharedPreferences.getInstance()).getString(_kCloudPassphrase) ??

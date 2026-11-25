@@ -4,10 +4,16 @@ import 'dart:convert';
 import 'package:cloudbase_flutter/cloudbase_flutter.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/widgets.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/db_helper.dart';
 import '../data/prefs.dart';
 import '../models/journal.dart';
+
+// R10 共用口径：与 peiban-core/src/r10.mjs 逐字一致。
+// 改动任何一个函数都要同步改 Node 端并跑对拍测试，否则手机和电脑
+// 会派生出两个身份、读到两本不同的库。
 
 /// 云同步状态。
 ///
@@ -15,8 +21,29 @@ import '../models/journal.dart';
 /// - noPassphrase：开了但还没设置同步口令（或还没完成过一次同步）
 /// - syncing：一次对齐/推送/拉取正在进行
 /// - synced：最近一次对齐/推送/拉取成功
+/// - dirMismatch：云端没读到数据、但本机有可重建历史（口令可能不对 / 版本过旧）
 /// - error：最近一次失败，[CloudSync.lastError] 有中文文案
-enum SyncStatus { off, noPassphrase, syncing, synced, error }
+enum SyncStatus { off, noPassphrase, syncing, synced, dirMismatch, error }
+
+/// 一次读取的三态。
+///
+/// 服务端实测：「对象真不存在」与「被 RLS 拒绝」返回逐字节同形的 404
+/// （118 bytes / STORAGE_OBJECT_NOT_FOUND）——它故意如此，否则平台自己
+/// 就是存在性 oracle。所以这里绝不叫 notFound / notExists / denied，
+/// 只叫 missing：**服务端说没拿到，分不清是真没有还是没权限**。
+enum CloudReadState { ok, missing, error }
+
+/// 三态叠加「本机可重建历史」后的动作。
+enum CloudOutcome {
+  /// 读到了，正常继续
+  ready,
+  /// missing + 本机有历史：不初始化、不写回、不把本机数据当待上传
+  blocked,
+  /// missing + 本机无历史：可以建新库
+  newLibrary,
+  /// 网络 / 鉴权 / 其它异常
+  error,
+}
 
 /// 一次对齐 / 推送 / 拉取的结果。message 给界面直接显示（中文）。
 class AlignResult {
@@ -53,8 +80,19 @@ class PassphraseOutcome {
 ///
 /// **云端是唯一权威（「云母库」），只增、不删、不覆盖。** 手机端和电脑 Agent 端
 /// 都只往里添加，任何一方都不能改写或删除云端历史。云端文件是一条 UTF-8 JSONL
-/// 追加日志：`memories/<sha256('peiban-sync-v1:' + 口令)>/journal.jsonl`，
+/// 追加日志：`memories/<匿名身份 sub>/journal.jsonl`，
 /// 协议见 [JournalLine]（lib/models/journal.dart，三方共用）。
+///
+/// **R10（方案 A：身份即目录）**：桶权限在 PG RLS，一条过宽的
+/// `memories_bucket_all` 曾把匿名身份对整桶敞开。修法是服务端只放行
+/// `foldername(name)[1] = auth.uid()` 的目录，客户端把身份本身变成口令的
+/// 确定性函数（`deviceId = sha256('peiban-dev-v1:'+口令)[:32]`），
+/// 于是「口令 → deviceId → sub → 目录前缀」，门槛由服务端执行。
+/// **目录只是路径，不是权限**；不许把这套写法解释成"路径随机所以安全"。
+///
+/// 只读只写 `<sub>` 前缀，**没有旧前缀回退**：收紧策略后旧前缀不在任何
+/// uid 名下，回退是死代码；放行旧前缀等于洞没关。旧数据由迁移脚本
+/// `peiban-core/tool/migrate-r10.mjs` 在关洞前 copy 到 `<sub>`。
 ///
 /// 对齐（align）= 先推送（本地有、云端没有的按确定性 key 追加到云端），
 /// 再拉取（云端有、本地没有的补进本地）。key 由内容算出，即使两个写入方并发
@@ -88,8 +126,29 @@ class CloudSync extends ChangeNotifier {
   /// 必须走 fromBucket。桶由主理人在管理端建好，客户端不建桶。
   static const String bucketId = 'memories';
 
-  /// 口令哈希的盐前缀：参与哈希，避免纯口令直接出现在目录名的彩虹表里。
+  /// 旧口径的口令哈希盐（**只供迁移脚本 / 历史对照**，客户端不再用它寻址）。
   static const String _passphraseSalt = 'peiban-sync-v1:';
+
+  /// R10 设备指纹派生盐。与 Node 端 `src/r10.mjs` 的 DEVICE_SALT 逐字一致。
+  static const String _deviceSalt = 'peiban-dev-v1:';
+
+  /// deviceId 取 sha256 hex 前 32 位（128 bit），与 SDK 的 uuid-v4 去横线同形。
+  static const int deviceIdHexLength = 32;
+
+  /// cloudbase_flutter 1.3.0 内部 x-device-id 的 prefs 键（cloudbase.dart:28）。
+  /// SDK 没开放注入口，只能在 init 之前先写这个键。升级 SDK 必须回来核对。
+  static const String _sdkDeviceIdKey = 'device_id';
+
+  /// SDK 会话的 prefs 键：'credentials_$env'（cloudbase.dart:103）。
+  /// 换身份时必须清掉，否则 getSession 会把旧 sub 的会话当有效会话复用。
+  static String get _sdkSessionKey => 'credentials_$envId';
+
+  /// 云母库文件名。
+  static const String journalFileName = 'journal.jsonl';
+
+  /// 本次发布的最小支持版本（按构建号数值比较，不比较版本名字符串）。
+  static const String minSupportedVersion = '1.7.4';
+  static const int minSupportedVersionCode = 20;
 
   /// 口令最小长度（客户端强校验）。
   static const int minPassphraseLength = 8;
@@ -109,6 +168,13 @@ class CloudSync extends ChangeNotifier {
   int _lastSyncAt = 0;
   bool _enabled = false;
 
+  /// 最近一次读的三态与动作判定（测试可直接断言，不许只塞进日志）。
+  CloudReadState? _readState;
+  CloudOutcome? _outcome;
+  CloudReadState? get readState => _readState;
+  CloudOutcome? get outcome => _outcome;
+  bool get dirMismatch => _outcome == CloudOutcome.blocked;
+
   String get uid => _uid;
   int get lastSyncAt => _lastSyncAt;
   bool get enabled => _enabled;
@@ -119,18 +185,132 @@ class CloudSync extends ChangeNotifier {
   /// 最近一次失败的中文文案（给设置页直接显示）。
   String? lastError;
 
-  /// 口令 → 云端目录名：sha256('peiban-sync-v1:' + 口令) 的 64 位小写十六进制。
-  /// 同口令永远同目录，不同口令不同目录（改动即换目录，旧目录留在云端）。
+  int _localBuildNumber = 0;
+
+  /// 口令 → deviceId：sha256('peiban-dev-v1:' + 口令) 的前 32 位小写十六进制。
+  ///
+  /// **纯函数、现算、不落盘、无兜底**：同一口令在任意机器 / 任意时间 /
+  /// 任意安装目录都得到同一个身份。口令为空返回空串，调用方必须走
+  /// 「未启用云同步」分支，绝不能用盐本身算出一个合法身份。
+  static String deviceIdFor(String passphrase) {
+    if (passphrase.trim().isEmpty) return '';
+    final hex = sha256.convert(utf8.encode('$_deviceSalt$passphrase')).toString();
+    return hex.substring(0, deviceIdHexLength);
+  }
+
+  /// 旧口径目录名：sha256('peiban-sync-v1:' + 口令) 的 64 位小写十六进制。
+  /// **仅供迁移脚本与历史对照**，客户端寻址绝不再用它。
   static String snapshotDirFor(String passphrase) =>
       sha256.convert(utf8.encode('$_passphraseSalt$passphrase')).toString();
 
-  /// 云母库在 memories 桶内的完整路径。<哈希>/journal.jsonl。
-  String get journalPath => '${snapshotDirFor(_passphrase)}/journal.jsonl';
+  /// 新前缀 = 匿名登录返回的 sub。客户端只读只写这一层。
+  static String dirFor(String sub) => sub.trim();
+
+  /// 云母库完整路径：`<sub>/journal.jsonl`。未登录时返回空串。
+  String get journalPath =>
+      _uid.isEmpty ? '' : '${dirFor(_uid)}/$journalFileName';
+
+  /// 三态 + 本机可重建历史 → 动作（纯函数，与 Node classifyRead 一致）。
+  ///
+  /// [hasLocalHistory] 必须是可重建证据（本地 journal 行数>0 或 lastSyncAt>0），
+  /// 不许用一次性布尔标记。判定绝不向服务端查询"目录是否存在"。
+  static CloudOutcome classifyRead({
+    required CloudReadState state,
+    required bool hasLocalHistory,
+  }) {
+    if (state == CloudReadState.error) return CloudOutcome.error;
+    if (state == CloudReadState.ok) return CloudOutcome.ready;
+    return hasLocalHistory ? CloudOutcome.blocked : CloudOutcome.newLibrary;
+  }
+
+  /// MISSING 时对用户说的话。两个分支允许同一句，差别在动作：
+  /// blocked 不建库、不写回；newLibrary 才建库。最后半句必须在。
+  static String cloudEmptyMessage() =>
+      '云端的记忆目录变了。可能是 App 版本过旧，也可能是口令不同。'
+      '本机记忆完好，没有被改动。';
+
+  /// 老版本专用：明确升级，且不走新库初始化。
+  static String upgradeRequiredMessage() =>
+      '云端的记忆库已升级到新的存储规则，当前 App 版本过旧，请升级到 '
+      '$minSupportedVersion 或更高版本。本机记忆完好，没有被改动。';
+
+  /// 版本名按数值逐段比较，绝不用字符串直接比（1.7.10 会被排到 1.7.9 前面）。
+  static List<int> versionParts(String versionName) {
+    final m = RegExp(r'^(\d+(?:\.\d+){0,3})').firstMatch(versionName.trim());
+    if (m == null) return const <int>[0];
+    return m.group(1)!.split('.').map((s) => int.parse(s)).toList();
+  }
+
+  static int compareVersionName(String a, String b) {
+    final x = versionParts(a);
+    final y = versionParts(b);
+    final n = x.length > y.length ? x.length : y.length;
+    for (var i = 0; i < n; i++) {
+      final xi = i < x.length ? x[i] : 0;
+      final yi = i < y.length ? y[i] : 0;
+      if (xi != yi) return xi < yi ? -1 : 1;
+    }
+    return 0;
+  }
+
+  /// '1.7.3' → true，'1.7.4' / '1.7.10' → false。
+  static bool isOldVersionName(String versionName) =>
+      compareVersionName(versionName, minSupportedVersion) < 0;
+
+  /// 构建号比较：19 → true，20 → false。
+  static bool isOldBuildNumber(int buildNumber) =>
+      buildNumber < minSupportedVersionCode;
+
+  /// 是否老客户端。优先用版本名，缺失时用构建号。
+  static bool isOldClient({String versionName = '', int buildNumber = 0}) =>
+      versionName.trim().isNotEmpty
+          ? isOldVersionName(versionName)
+          : isOldBuildNumber(buildNumber);
 
   // ——— 初始化 ———
 
+  /// 把「口令派生的 deviceId」写进 SDK 的 prefs 再 init。
+  ///
+  /// cloudbase_flutter 1.3.0 的 `CloudBase.init()` 会读 prefs 的 `device_id`，
+  /// 没有就随机生成一个 UUID 并持久化——那正是 S6 禁止的"一次读取失败 =
+  /// 永久新身份"。所以必须在 init 之前把现算的身份写进去。
+  ///
+  /// 返回 false 表示不该进云路径（口令为空），调用方一律静默返回，
+  /// 不生成任何随机身份、不落盘。
+  Future<bool> _prepareIdentity() async {
+    if (_passphrase.isEmpty) return false;
+    final want = deviceIdFor(_passphrase);
+    if (want.isEmpty) return false;
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final current = sp.getString(_sdkDeviceIdKey) ?? '';
+      if (current != want) {
+        // 身份变了（首次升级到 R10，或用户改了口令）：
+        // 旧会话属于旧 sub，必须清掉，否则 getSession 会把旧 sub 一路复用。
+        await sp.remove(_sdkSessionKey);
+        await sp.setString(_sdkDeviceIdKey, want);
+        _app = null;
+        _uid = '';
+        _readState = null;
+        _outcome = null;
+        assert(() {
+          debugPrint('[cloud_sync] identity switched: dev=${want.substring(0, 8)}…');
+          return true;
+        }());
+      }
+      return true;
+    } catch (e) {
+      assert(() {
+        debugPrint('[cloud_sync] identity prepare failed: ${e.runtimeType}');
+        return true;
+      }());
+      return false;
+    }
+  }
+
   /// 懒初始化 CloudBase。失败只记录，绝不抛——同步是锦上添花，不能崩主流程。
   Future<CloudBase?> _ensureApp() async {
+    if (!await _prepareIdentity()) return null;
     if (_app != null) return _app;
     try {
       _app = await CloudBase.init(
@@ -142,11 +322,52 @@ class CloudSync extends ChangeNotifier {
     } catch (e) {
       lastError = '连不上云端，请检查网络';
       assert(() {
-        debugPrint('[cloud_sync] init failed: $e');
+        debugPrint('[cloud_sync] init failed: ${e.runtimeType}');
         return true;
       }());
       return null;
     }
+  }
+
+  /// 读取本机 App 构建号（数值）。失败返回 0，由版本名兜底。
+  Future<int> _localBuildNumberOrZero() async {
+    if (_localBuildNumber > 0) return _localBuildNumber;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _localBuildNumber = int.tryParse(info.buildNumber.trim()) ?? 0;
+    } catch (_) {
+      _localBuildNumber = 0;
+    }
+    return _localBuildNumber;
+  }
+
+  /// 本机是否有可重建历史（PRD S5④）：本地 journal 行数 > 0 或 lastSyncAt>0。
+  /// 不用一次性布尔标记——标记会丢、会和真实数据不一致，数据本身不会。
+  Future<bool> hasLocalHistory() async {
+    if (_lastSyncAt > 0) return true;
+    try {
+      final c = await DbHelper.instance.firstCompanion();
+      if (c?.id == null) return false;
+      final int id = c!.id!;
+      if (await DbHelper.instance.messageCount(id) > 0) return true;
+      if ((await DbHelper.instance.userNotes()).isNotEmpty) return true;
+      if ((await DbHelper.instance.memoryChunks(id)).isNotEmpty) return true;
+      if ((await DbHelper.instance.exportAllStyleExamples(id)).isNotEmpty) {
+        return true;
+      }
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 换机出口：用户明确说「我在旧手机上有记录」时调用。
+  /// 只在本机记一个"这次允许按新库初始化"的确认（用派生的 deviceId 做标记，
+  /// 不写口令明文），**不向服务端查询任何目录是否存在**。
+  Future<void> acknowledgeNewLibrary() async {
+    final key = deviceIdFor(_passphrase);
+    if (key.isEmpty) return;
+    await Prefs.setCloudLibraryAck(key);
   }
 
   /// 启动时调一次：读开关和口令，恢复状态。只查询、不登录不上传下载。
@@ -255,6 +476,10 @@ class CloudSync extends ChangeNotifier {
     if (!changed && _lastSyncAt > 0) {
       return const PassphraseOutcome(true, '口令没有变化，云端备份还是最新的');
     }
+
+    // 改口令 = 换身份 = 新目录，是用户在这里显式选择的，等价于一次
+    // 「允许按新库初始化」确认；否则会被 MISSING + 本机历史的门禁挡住。
+    if (changed) await acknowledgeNewLibrary();
 
     // 第一次设口令，或换了口令（换了目录）：推送一份过去（只推送，安全）
     final r = await pushOnly();
@@ -415,6 +640,27 @@ class CloudSync extends ChangeNotifier {
   Future<String?> _uploadEmptyJournal(CloudBase app) async {
     try {
       final bucket = app.storage.fromBucket(bucketId);
+      // 空覆盖是全协议唯一允许整份覆盖的地方，但也绝不能在
+      // 「MISSING + 本机有历史」时执行——那正是"空库 → 覆盖"的毁数据路径。
+      final pre = await bucket.download(journalPath);
+      if (pre.error != null) {
+        final code = (pre.error!.code ?? '').toUpperCase();
+        final status = pre.error!.status ?? 0;
+        final missing = code.contains('NOT_FOUND') ||
+            status == 404 ||
+            code.contains('NO_SUCH');
+        if (!missing) return _storageMessage(pre.error!, '销毁失败');
+        _readState = CloudReadState.missing;
+        final preOutcome = classifyRead(
+          state: CloudReadState.missing,
+          hasLocalHistory: await hasLocalHistory(),
+        );
+        _outcome = preOutcome;
+        if (preOutcome == CloudOutcome.blocked) return cloudEmptyMessage();
+      } else {
+        _readState = CloudReadState.ok;
+        _outcome = CloudOutcome.ready;
+      }
       final up = await bucket.upload(
         journalPath,
         utf8.encode(''),
@@ -432,7 +678,8 @@ class CloudSync extends ChangeNotifier {
 
   /// 对齐算法的公共实现（App 端 align()；Agent 端未来同款）：
   ///
-  /// 1. 下载 journal.jsonl → 解析全部有效行 + key 集合（坏行跳过；NOT_FOUND = 空库）
+  /// 1. 下载 `<sub>/journal.jsonl` → 解析有效行 + key 集合（坏行跳过）；
+  ///    404 = MISSING（分不清真没有还是没权限），有本机历史就 BLOCKED 停下
   /// 2. 推送：导出本地全部记录，逐条算 key；key 不在云端 key 集合的 → 生成追加行
   /// 3. 写回：「下载的原文 + 追加行」按原行顺序合并（追加行在后面）重新上传。
   ///    云端已有的行原样保留，一行不删不改。3 和 4 之间若上传失败，下次对齐
@@ -536,7 +783,8 @@ class CloudSync extends ChangeNotifier {
   /// token 过期自愈在 [_runLocked] 薄壳里做（换新会话重试一次），本方法
   /// 内部逻辑一行不动。
   ///
-  /// 1. 下载 journal.jsonl → 解析全部有效行 + key 集合（坏行跳过；NOT_FOUND = 空库）
+  /// 1. 下载 `<sub>/journal.jsonl` → 解析有效行 + key 集合（坏行跳过）；
+  ///    404 = MISSING（分不清真没有还是没权限），有本机历史就 BLOCKED 停下
   /// 2. 推送：导出本地全部记录，逐条算 key；key 不在云端 key 集合的 → 生成追加行
   /// 3. 写回：「下载的原文 + 追加行」按原行顺序合并（追加行在后面）重新上传。
   ///    云端已有的行原样保留，一行不删不改。3 和 4 之间若上传失败，下次对齐
@@ -554,10 +802,14 @@ class CloudSync extends ChangeNotifier {
     try {
       final bucket = app.storage.fromBucket(bucketId);
 
-      // ——— 1. 下载云母库（不存在 = 空库，不是错误）———
+      // ——— 1. 下载云母库 ———
+      // 只读 `<sub>` 前缀：没有旧前缀回退（收紧策略后旧前缀不在任何 uid 名下）。
+      // 404 是 MISSING（服务端说没拿到，分不清真没有还是没权限），
+      // **不是空库**：有本机历史就必须停下来，不许写回、不许初始化。
       var raw = '';
       var cloudMissing = false;
       final down = await bucket.download(journalPath);
+      final CloudReadState readState;
       if (down.error != null) {
         final code = (down.error!.code ?? '').toUpperCase();
         final status = down.error!.status ?? 0;
@@ -565,14 +817,55 @@ class CloudSync extends ChangeNotifier {
             status == 404 ||
             code.contains('NO_SUCH');
         if (!missing) {
+          readState = CloudReadState.error;
+          _readState = readState;
+          _outcome = CloudOutcome.error;
           final msg = _storageMessage(down.error!, '$verb失败');
           _setStatus(SyncStatus.error, msg);
           return AlignResult(ok: false, message: msg);
         }
-        cloudMissing = true;
+        readState = CloudReadState.missing;
       } else {
+        readState = CloudReadState.ok;
         raw = utf8.decode(down.data ?? <int>[]);
       }
+      _readState = readState;
+
+      var outcome = classifyRead(
+        state: readState,
+        hasLocalHistory: readState == CloudReadState.missing
+            ? await hasLocalHistory()
+            : false,
+      );
+      if (readState == CloudReadState.missing) {
+        // 换机出口：只在用户明确点过「我在旧手机上有记录」时放行一次。
+        // 不查服务端、不猜目录、不写口令明文。
+        final ack = await Prefs.cloudLibraryAck();
+        if (outcome == CloudOutcome.blocked &&
+            ack.isNotEmpty &&
+            ack == deviceIdFor(_passphrase)) {
+          await Prefs.clearCloudLibraryAck();
+          outcome = CloudOutcome.newLibrary;
+        }
+        // 版本门禁：构建号小于最小支持版本时一律请升级，绝不走新库初始化。
+        final build = await _localBuildNumberOrZero();
+        if (build > 0 &&
+            isOldBuildNumber(build) &&
+            outcome == CloudOutcome.newLibrary) {
+          final msg = upgradeRequiredMessage();
+          _outcome = CloudOutcome.blocked;
+          _setStatus(SyncStatus.dirMismatch, msg);
+          return AlignResult(ok: false, message: msg);
+        }
+        if (outcome == CloudOutcome.blocked) {
+          final msg = cloudEmptyMessage();
+          _outcome = CloudOutcome.blocked;
+          _setStatus(SyncStatus.dirMismatch, msg);
+          return AlignResult(ok: false, message: msg);
+        }
+        cloudMissing = true;
+      }
+      _outcome = outcome;
       final cloudLines = parseJournalLines(raw);
       final cloudKeys = cloudLines.map((l) => l.key).toSet();
       // 同 key 取 ts 最大的一行：给 speech/persona 的「内容变了才追加」比较用
@@ -811,21 +1104,25 @@ class CloudSync extends ChangeNotifier {
     required int pulled,
     required bool cloudMissing,
   }) {
+    // MISSING + 无本机历史才可能走到这里（有历史已经在读取段 BLOCKED 返回）。
+    // 文案两种分支允许相同，差别在"有没有发出建库请求"这个动作。
+    final note = cloudMissing
+        ? '${cloudEmptyMessage()}（本次按新库处理；如不是你要的库请核对口令。）'
+        : '';
     if (verb == '对齐') {
-      if (pushed == 0 && pulled == 0) return '对齐完成：云端和本地已经一致';
-      return '对齐完成：上传 $pushed 条，拉取 $pulled 条';
+      if (pushed == 0 && pulled == 0) return '$note对齐完成：云端和本地已经一致';
+      return '$note对齐完成：上传 $pushed 条，拉取 $pulled 条';
     }
     if (verb == '上传') {
-      if (pushed == 0) return '云端记忆已是最新';
-      return '已推送 $pushed 条到云端';
+      if (pushed == 0) return '$note云端记忆已是最新';
+      return '$note已推送 $pushed 条到云端';
     }
     // 恢复
     if (cloudMissing && pulled == 0) {
-      return '这个口令下云端还没有记忆库（先在另一台设备上「对齐云端」一次，'
-          '或确认口令和之前设的一样）';
+      return '$note这次没有从云端读到记忆，本机记录未被改动。';
     }
     if (pulled == 0) return '云端没有这台设备缺的记录，本地已经是全的';
-    return '已从云端补齐 $pulled 条';
+    return '$note已从云端补齐 $pulled 条';
   }
 
   // ——— 本地导出 ———

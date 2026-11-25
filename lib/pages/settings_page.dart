@@ -737,6 +737,76 @@ class _SettingsPageState extends State<SettingsPage> {
                       subtitle:
                           Text('最后同步：${_fmtTime(cloud.lastSyncAt)}'),
                     ),
+                    // R10：云端没读到数据但本机有历史时，必须给出可判别状态，
+                    // 不许显示成空库，也不许静默继续。两个可能原因一起说，
+                    // 并明确告诉用户"本机记忆完好、没有被改动"。
+                    if (cloud.dirMismatch)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.errorContainer,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                cloud.lastError ?? CloudSync.cloudEmptyMessage(),
+                                style: TextStyle(
+                                    color: theme.colorScheme.onErrorContainer),
+                              ),
+                              const SizedBox(height: 8),
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  TextButton(
+                                    onPressed: _cloudChangePassphrase,
+                                    child: const Text('核对口令（一字不差）'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () async {
+                                      // S5⑤ 换机出口：只有用户明确走这条才允许按新库处理。
+                                      // 先强提示核对口令并让用户重新输入，全程不查服务端。
+                                      final confirmed =
+                                          await showDialog<bool>(
+                                        context: context,
+                                        builder: (_) => AlertDialog(
+                                          title: const Text('我在旧手机上有记录'),
+                                          content: const Text(
+                                            '请确认旧手机上的同步口令一字不差（含大小写、空格）。'
+                                            '下一步会让你重新输入口令，并按新库处理本机记忆。'
+                                            '本机记忆完好，不会被删除。',
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                                onPressed: () =>
+                                                    Navigator.pop(context, false),
+                                                child: const Text('取消')),
+                                            FilledButton(
+                                                onPressed: () =>
+                                                    Navigator.pop(context, true),
+                                                child: const Text('已核对，继续')),
+                                          ],
+                                        ),
+                                      );
+                                      if (confirmed != true || !mounted) return;
+                                      await CloudSync.instance
+                                          .acknowledgeNewLibrary();
+                                      if (!mounted) return;
+                                      await _cloudChangePassphrase();
+                                      if (!mounted) return;
+                                      await _cloudAlign();
+                                    },
+                                    child: const Text('我在旧手机上有记录'),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     if (cloud.status == SyncStatus.syncing)
                       const Padding(
                         padding: EdgeInsets.only(bottom: 8),
