@@ -1,12 +1,11 @@
 {
-  "version": "1.8.1",
-  "build": 22,
-  "apk_url": "https://naughty-beaver-d7gdchzub18ffae94-1455083206.tcloudbaseapp.com/peiban/app-arm64-v8a-release.apk",
+  "version": "1.8.2",
+  "build": 23,
+  "apk_url": "https://github.com/dayouAI777/peibanAPP/releases/download/v1.8.2/app-arm64-v8a-release.apk",
   "changelog": [
-    "修：导出的文件以前写在你手机里一个普通文件管理器看不到的地方（App 私有目录），所以你找不到它。现在导出成功会直接弹出分享面板，你可以「存到手机」「发给自己微信」「存到网盘」，这样才算真的拿到手",
-    "修：导出成功的提示改成能说清「文件怎么拿走」，不再只说「已生成」",
-    "其余同 1.8.0：她的自我、三层记忆、她的状态、主动消息诊断",
-    "签名没变，旧版直接覆盖安装"
+    "设置页按用途归纳为六组，保存按钮固定在底部",
+    "本地提醒、云端送达和通知诊断集中管理，清理与重置收进二级分组",
+    "从通知诊断返回时保留未保存的设置"
   ],
   "published_at": "2026-11-25",
   "min_supported": "1.7.4",
